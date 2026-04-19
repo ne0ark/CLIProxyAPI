@@ -2,9 +2,11 @@ name: goreleaser
 
 on:
   push:
-    # run only against tags
+    # Run only for explicit version tags (e.g. v1.2.3).
+    # Branch-driven rolling releases are handled by branch-release.yml
+    # using the rolling-<branch> tags, which must not trigger this job.
     tags:
-      - '*'
+      - 'v*'
 
 permissions:
   contents: write
