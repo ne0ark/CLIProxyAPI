@@ -728,13 +728,12 @@ func extractOpenAIUsage(usage gjson.Result) (int64, int64, int64) {
 	outputTokens := usage.Get("completion_tokens").Int()
 	cachedTokens := usage.Get("prompt_tokens_details.cached_tokens").Int()
 
-	if cachedTokens > 0 {
-		if inputTokens >= cachedTokens {
-			inputTokens -= cachedTokens
-		} else {
-			inputTokens = 0
-		}
-	}
+	// Do not subtract cached_tokens from input_tokens. OpenAI's prompt_tokens
+	// already represents the full prompt size; Anthropic clients (e.g. Claude
+	// Code BYOK) rely on input_tokens to reflect total context length and
+	// trigger compaction. Subtracting cached_tokens understates context usage
+	// and breaks automatic compaction. cache_read_input_tokens is emitted
+	// separately by callers for reporting cache reuse.
 
 	return inputTokens, outputTokens, cachedTokens
 }
