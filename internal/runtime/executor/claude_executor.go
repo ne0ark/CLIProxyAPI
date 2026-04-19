@@ -70,15 +70,6 @@ var oauthToolRenameMap = map[string]string{
 	"tasklist":     "TaskList",
 }
 
-// oauthToolRenameReverseMap is the inverse of oauthToolRenameMap for response decoding.
-var oauthToolRenameReverseMap = func() map[string]string {
-	m := make(map[string]string, len(oauthToolRenameMap))
-	for k, v := range oauthToolRenameMap {
-		m[v] = k
-	}
-	return m
-}()
-
 // oauthToolsToRemove lists tool names that must be stripped from OAuth requests
 // even after remapping. Currently empty — all tools are mapped instead of removed.
 var oauthToolsToRemove = map[string]bool{}
@@ -1142,10 +1133,15 @@ func remapOAuthToolNames(body []byte) ([]byte, bool, map[string]string) {
 	dynReverse := map[string]string{}
 
 	// resolveNewName tries the static map first, then falls back to dynamic
-	// snakeCaseToTitleCase conversion. Dynamic renames are recorded in dynReverse
-	// for later response decoding.
+	// snakeCaseToTitleCase conversion. Both static and dynamic renames are
+	// recorded in dynReverse so the response decoder only touches names that
+	// *this* request actually renamed. This prevents corrupting mixed-casing
+	// clients (e.g. Amp CLI sends both `Bash` and `glob`) where a global
+	// reverse map would incorrectly rewrite TitleCase names the client
+	// originally sent as TitleCase.
 	resolveNewName := func(name string) (string, bool) {
 		if newName, ok := oauthToolRenameMap[name]; ok && newName != name {
+			dynReverse[newName] = name
 			return newName, true
 		}
 		if newName, ok := dynamicOAuthToolRename(name); ok {
@@ -1271,17 +1267,16 @@ func remapOAuthToolNames(body []byte) ([]byte, bool, map[string]string) {
 }
 
 // reverseRemapOAuthToolNames reverses the tool name mapping for non-stream responses.
-// It maps Claude Code TitleCase names back to the original lowercase names so the
-// downstream client receives tool names it recognizes. dynReverse contains per-request
-// mappings for dynamically renamed tools (from snakeCaseToTitleCase fallback).
+// It maps the upstream (TitleCase) names back to the original names the client sent,
+// driven exclusively by the per-request dynReverse map populated during the forward
+// pass. Names the client already sent in TitleCase pass through untouched, which is
+// required for mixed-casing clients (e.g. Amp CLI sends `Bash` alongside `glob`).
 func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byte {
 	resolveOrigName := func(name string) (string, bool) {
-		if dynReverse != nil {
-			if origName, ok := dynReverse[name]; ok {
-				return origName, true
-			}
+		if dynReverse == nil {
+			return name, false
 		}
-		if origName, ok := oauthToolRenameReverseMap[name]; ok {
+		if origName, ok := dynReverse[name]; ok {
 			return origName, true
 		}
 		return name, false
@@ -1313,15 +1308,13 @@ func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byt
 }
 
 // reverseRemapOAuthToolNamesFromStreamLine reverses the tool name mapping for SSE stream lines.
-// dynReverse contains per-request mappings for dynamically renamed tools.
+// Driven exclusively by the per-request dynReverse map. See reverseRemapOAuthToolNames.
 func reverseRemapOAuthToolNamesFromStreamLine(line []byte, dynReverse map[string]string) []byte {
 	resolveOrigName := func(name string) (string, bool) {
-		if dynReverse != nil {
-			if origName, ok := dynReverse[name]; ok {
-				return origName, true
-			}
+		if dynReverse == nil {
+			return name, false
 		}
-		if origName, ok := oauthToolRenameReverseMap[name]; ok {
+		if origName, ok := dynReverse[name]; ok {
 			return origName, true
 		}
 		return name, false
