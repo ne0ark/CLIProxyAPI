@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: branch-release-${{ github.ref_name }}
+  group: branch-release-${{ github.event.inputs.branch || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -51,7 +51,10 @@ jobs:
           short_sha="$(git rev-parse --short HEAD)"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           tag="rolling-${ROLLING_BRANCH}"
-          version="${tag}-${short_sha}"
+          # GoReleaser derives .Version from the rolling git tag we push
+          # below, so the binary's main.Version will be exactly "rolling-<branch>".
+          # Keep the notes consistent with what the built binary reports.
+          version="${tag}"
           {
             echo "VERSION=${version}"
             echo "COMMIT=${short_sha}"
