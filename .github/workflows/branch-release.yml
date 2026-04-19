@@ -1,0 +1,138 @@
+name: branch-release
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to publish a rolling release for"
+        required: true
+        default: "main"
+        type: choice
+        options:
+          - main
+          - dev
+
+permissions:
+  contents: write
+
+concurrency:
+  group: branch-release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  rolling-release:
+    runs-on: ubuntu-latest
+    env:
+      ROLLING_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refresh models catalog
+        run: |
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate build metadata
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short HEAD)"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          tag="rolling-${ROLLING_BRANCH}"
+          version="${tag}-${short_sha}"
+          {
+            echo "VERSION=${version}"
+            echo "COMMIT=${short_sha}"
+            echo "BUILD_DATE=${build_date}"
+            echo "TAG=${tag}"
+          } >> "$GITHUB_ENV"
+
+      - name: Delete prior rolling release and refresh tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Best-effort delete of any prior release+tag for this rolling slot.
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
+          fi
+          # Delete the tag on remote too, in case the release API did not.
+          git push --quiet \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            ":refs/tags/${TAG}" || true
+
+          # Create the rolling tag at the current commit so GoReleaser can
+          # derive .Version from it and skip validation/publish.
+          git tag -f "${TAG}" "${GITHUB_SHA}"
+          git fetch --force --tags
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/${TAG}"
+
+      - name: Build artifacts with GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean --skip=publish,validate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ env.VERSION }}
+          COMMIT: ${{ env.COMMIT }}
+          BUILD_DATE: ${{ env.BUILD_DATE }}
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          shopt -s nullglob
+          for f in dist/*.tar.gz dist/*.zip dist/checksums.txt; do
+            cp "$f" release-assets/
+          done
+          ls -la release-assets
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          notes_file="$(mktemp)"
+          cat > "${notes_file}" <<EOF
+          Rolling build of \`${ROLLING_BRANCH}\` at commit \`${COMMIT}\`.
+
+          - Branch: \`${ROLLING_BRANCH}\`
+          - Commit: [\`${COMMIT}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
+          - Build date: \`${BUILD_DATE}\`
+          - Version string: \`${VERSION}\`
+
+          This release is regenerated every time \`${ROLLING_BRANCH}\` is updated.
+          For stable, immutable builds use the tagged \`v*\` releases instead.
+          EOF
+
+          prerelease_flag=""
+          if [ "${ROLLING_BRANCH}" != "main" ]; then
+            prerelease_flag="--prerelease"
+          fi
+
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Rolling ${ROLLING_BRANCH} (${COMMIT})" \
+            --notes-file "${notes_file}" \
+            ${prerelease_flag} \
+            release-assets/*
