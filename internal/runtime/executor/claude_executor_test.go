@@ -2058,8 +2058,10 @@ func TestRemapOAuthToolNames_TaskCreate_StaticMapping(t *testing.T) {
 	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "TaskCreate" {
 		t.Fatalf("tool_choice.name = %q, want %q", got, "TaskCreate")
 	}
-	if len(dynReverse) != 0 {
-		t.Fatalf("dynReverse = %#v, want empty for static mappings", dynReverse)
+	// Static mappings are now recorded in dynReverse so the reverse pass only
+	// touches names that *this request* renamed.
+	if got := dynReverse["TaskCreate"]; got != "taskcreate" {
+		t.Fatalf("dynReverse[TaskCreate] = %q, want %q", got, "taskcreate")
 	}
 
 	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"TaskCreate","input":{"title":"todo"}}]}`)
@@ -2090,6 +2092,54 @@ func TestRemapOAuthToolNames_TaskCreateSnakeCase_ReverseApplied(t *testing.T) {
 	reversed := reverseRemapOAuthToolNames(resp, dynReverse)
 	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "task_create" {
 		t.Fatalf("content.0.name = %q, want %q", got, "task_create")
+	}
+}
+
+// TestRemapOAuthToolNames_MixedCase_PreservesClientCasing is a regression test
+// for the Amp CLI bug: clients that send a mix of TitleCase (`Bash`, `Read`,
+// `Grep`) and lowercase (`glob`, `skill`) tool names must receive responses
+// with their original casing preserved. Previously the reverse pass consulted
+// a global map and rewrote every `Bash` in the response to `bash`, which Amp
+// then rejected with `tool "bash" is not allowed for smart mode`.
+func TestRemapOAuthToolNames_MixedCase_PreservesClientCasing(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"Bash","description":"Run shell","input_schema":{"type":"object"}},{"name":"glob","description":"Glob files","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	out, renamed, dynReverse := remapOAuthToolNames(body)
+	if !renamed {
+		t.Fatalf("renamed = false, want true (glob → Glob)")
+	}
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "Bash" {
+		t.Fatalf("tools.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "Glob" {
+		t.Fatalf("tools.1.name = %q, want %q", got, "Glob")
+	}
+	// Bash was sent TitleCase — it must NOT be recorded in dynReverse.
+	if _, ok := dynReverse["Bash"]; ok {
+		t.Fatalf("dynReverse[Bash] set, want absent (client sent TitleCase)")
+	}
+	if got := dynReverse["Glob"]; got != "glob" {
+		t.Fatalf("dynReverse[Glob] = %q, want %q", got, "glob")
+	}
+
+	// Non-stream response: Bash must stay Bash, Glob must revert to glob.
+	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"cmd":"ls"}},{"type":"tool_use","id":"toolu_02","name":"Glob","input":{"pattern":"*.go"}}]}`)
+	reversed := reverseRemapOAuthToolNames(resp, dynReverse)
+	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "Bash" {
+		t.Fatalf("content.0.name = %q, want %q (client TitleCase must pass through)", got, "Bash")
+	}
+	if got := gjson.GetBytes(reversed, "content.1.name").String(); got != "glob" {
+		t.Fatalf("content.1.name = %q, want %q", got, "glob")
+	}
+
+	// SSE stream variant: same guarantees per-line.
+	streamBash := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"Bash","input":{}}}`)
+	streamGlob := []byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_02","name":"Glob","input":{}}}`)
+	if got := string(reverseRemapOAuthToolNamesFromStreamLine(streamBash, dynReverse)); !strings.Contains(got, `"name":"Bash"`) {
+		t.Fatalf("stream Bash line = %q, want to contain %q", got, `"name":"Bash"`)
+	}
+	if got := string(reverseRemapOAuthToolNamesFromStreamLine(streamGlob, dynReverse)); !strings.Contains(got, `"name":"glob"`) {
+		t.Fatalf("stream Glob line = %q, want to contain %q", got, `"name":"glob"`)
 	}
 }
 
