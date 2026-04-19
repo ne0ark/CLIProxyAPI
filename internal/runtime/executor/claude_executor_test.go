@@ -1714,14 +1714,18 @@ func TestClaudeExecutor_ExecuteStream_AcceptEncodingOverrideCannotBypassIdentity
 	}
 }
 
-func expectedClaudeCodeStaticPrompt() string {
-	return strings.Join([]string{
+func expectedClaudeCodeSystemBlocks(taskToolName string) []string {
+	return []string{
+		"",
+		"You are Claude Code, Anthropic's official CLI for Claude.",
 		helps.ClaudeCodeIntro,
 		helps.ClaudeCodeSystem,
 		helps.ClaudeCodeDoingTasks,
+		helps.ClaudeCodeActions,
+		helps.BuildUsingToolsSection(taskToolName),
 		helps.ClaudeCodeToneAndStyle,
 		helps.ClaudeCodeOutputEfficiency,
-	}, "\n\n")
+	}
 }
 
 func expectedForwardedSystemReminder(text string) string {
@@ -1746,21 +1750,21 @@ func TestCheckSystemInstructionsWithMode_StringSystemPreserved(t *testing.T) {
 	}
 
 	blocks := system.Array()
-	if len(blocks) != 3 {
-		t.Fatalf("expected 3 system blocks, got %d", len(blocks))
+	if len(blocks) != 9 {
+		t.Fatalf("expected 9 system blocks, got %d", len(blocks))
 	}
 
 	if !strings.HasPrefix(blocks[0].Get("text").String(), "x-anthropic-billing-header:") {
 		t.Fatalf("blocks[0] should be billing header, got %q", blocks[0].Get("text").String())
 	}
-	if blocks[1].Get("text").String() != "You are Claude Code, Anthropic's official CLI for Claude." {
-		t.Fatalf("blocks[1] should be agent block, got %q", blocks[1].Get("text").String())
-	}
-	if blocks[2].Get("text").String() != expectedClaudeCodeStaticPrompt() {
-		t.Fatalf("blocks[2] should be static Claude Code prompt, got %q", blocks[2].Get("text").String())
-	}
-	if blocks[2].Get("cache_control").Exists() {
-		t.Fatalf("blocks[2] should not have cache_control, got %s", blocks[2].Get("cache_control").Raw)
+	expected := expectedClaudeCodeSystemBlocks("")
+	for i := 1; i < len(expected); i++ {
+		if got := blocks[i].Get("text").String(); got != expected[i] {
+			t.Fatalf("blocks[%d] = %q, want %q", i, got, expected[i])
+		}
+		if blocks[i].Get("cache_control").Exists() {
+			t.Fatalf("blocks[%d] should not have cache_control, got %s", i, blocks[i].Get("cache_control").Raw)
+		}
 	}
 
 	if got := gjson.GetBytes(out, "messages.0.content").String(); got != expectedForwardedSystemReminder("You are a helpful assistant.")+"hi" {
@@ -1775,8 +1779,8 @@ func TestCheckSystemInstructionsWithMode_StringSystemStrict(t *testing.T) {
 	out := checkSystemInstructionsWithMode(payload, true)
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 3 {
-		t.Fatalf("strict mode should produce 3 injected blocks, got %d", len(blocks))
+	if len(blocks) != 9 {
+		t.Fatalf("strict mode should produce 9 injected blocks, got %d", len(blocks))
 	}
 	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "hi" {
 		t.Fatalf("strict mode should not forward system prompt into messages, got %q", got)
@@ -1790,8 +1794,8 @@ func TestCheckSystemInstructionsWithMode_EmptyStringSystemIgnored(t *testing.T) 
 	out := checkSystemInstructionsWithMode(payload, false)
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 3 {
-		t.Fatalf("empty string system should still produce 3 injected blocks, got %d", len(blocks))
+	if len(blocks) != 9 {
+		t.Fatalf("empty string system should still produce 9 injected blocks, got %d", len(blocks))
 	}
 	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "hi" {
 		t.Fatalf("empty string system should not alter messages, got %q", got)
@@ -1805,11 +1809,14 @@ func TestCheckSystemInstructionsWithMode_ArraySystemStillWorks(t *testing.T) {
 	out := checkSystemInstructionsWithMode(payload, false)
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 3 {
-		t.Fatalf("expected 3 system blocks, got %d", len(blocks))
+	if len(blocks) != 9 {
+		t.Fatalf("expected 9 system blocks, got %d", len(blocks))
 	}
-	if blocks[2].Get("text").String() != expectedClaudeCodeStaticPrompt() {
-		t.Fatalf("blocks[2] should be static Claude Code prompt, got %q", blocks[2].Get("text").String())
+	expected := expectedClaudeCodeSystemBlocks("")
+	for i := 1; i < len(expected); i++ {
+		if got := blocks[i].Get("text").String(); got != expected[i] {
+			t.Fatalf("blocks[%d] = %q, want %q", i, got, expected[i])
+		}
 	}
 	if got := gjson.GetBytes(out, "messages.0.content").String(); got != expectedForwardedSystemReminder("Be concise.")+"hi" {
 		t.Fatalf("messages[0].content should include forwarded array system prompt, got %q", got)
@@ -1823,11 +1830,21 @@ func TestCheckSystemInstructionsWithMode_StringWithSpecialChars(t *testing.T) {
 	out := checkSystemInstructionsWithMode(payload, false)
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 3 {
-		t.Fatalf("expected 3 system blocks, got %d", len(blocks))
+	if len(blocks) != 9 {
+		t.Fatalf("expected 9 system blocks, got %d", len(blocks))
 	}
 	if got := gjson.GetBytes(out, "messages.0.content").String(); got != expectedForwardedSystemReminder(`Use <xml> tags & "quotes" in output.`)+"hi" {
 		t.Fatalf("forwarded system prompt text mangled, got %q", got)
+	}
+}
+
+func TestCheckSystemInstructionsWithMode_UsingToolsSectionReflectsTaskTool(t *testing.T) {
+	payload := []byte(`{"system":"Keep track of progress.","tools":[{"name":"taskcreate","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`)
+
+	out := checkSystemInstructionsWithMode(payload, false)
+
+	if got := gjson.GetBytes(out, "system.6.text").String(); got != helps.BuildUsingToolsSection("TaskCreate") {
+		t.Fatalf("system.6.text = %q, want %q", got, helps.BuildUsingToolsSection("TaskCreate"))
 	}
 }
 
@@ -1935,8 +1952,8 @@ func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmi
 	out := applyCloaking(context.Background(), cfg, auth, payload, "claude-3-5-sonnet-20241022", "key-123")
 
 	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) != 3 {
-		t.Fatalf("expected strict mode to keep the 3 injected Claude Code system blocks, got %d", len(blocks))
+	if len(blocks) != 9 {
+		t.Fatalf("expected strict mode to keep the 9 injected Claude Code system blocks, got %d", len(blocks))
 	}
 	if got := gjson.GetBytes(out, "messages.0.content.#").Int(); got != 1 {
 		t.Fatalf("strict mode should not prepend a forwarded system reminder block, got %d content blocks", got)
@@ -1989,7 +2006,7 @@ func TestNormalizeClaudeTemperatureForThinking_AfterForcedToolChoiceKeepsOrigina
 func TestRemapOAuthToolNames_TitleCase_NoReverseNeeded(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"Bash","description":"Run shell commands","input_schema":{"type":"object","properties":{"cmd":{"type":"string"}}}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 
-	out, renamed := remapOAuthToolNames(body)
+	out, renamed, dynReverse := remapOAuthToolNames(body)
 	if renamed {
 		t.Fatalf("renamed = true, want false")
 	}
@@ -2000,7 +2017,7 @@ func TestRemapOAuthToolNames_TitleCase_NoReverseNeeded(t *testing.T) {
 	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"cmd":"ls"}}]}`)
 	reversed := resp
 	if renamed {
-		reversed = reverseRemapOAuthToolNames(resp)
+		reversed = reverseRemapOAuthToolNames(resp, dynReverse)
 	}
 	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "Bash" {
 		t.Fatalf("content.0.name = %q, want %q", got, "Bash")
@@ -2010,7 +2027,7 @@ func TestRemapOAuthToolNames_TitleCase_NoReverseNeeded(t *testing.T) {
 func TestRemapOAuthToolNames_Lowercase_ReverseApplied(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"bash","description":"Run shell commands","input_schema":{"type":"object","properties":{"cmd":{"type":"string"}}}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 
-	out, renamed := remapOAuthToolNames(body)
+	out, renamed, dynReverse := remapOAuthToolNames(body)
 	if !renamed {
 		t.Fatalf("renamed = false, want true")
 	}
@@ -2021,9 +2038,125 @@ func TestRemapOAuthToolNames_Lowercase_ReverseApplied(t *testing.T) {
 	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"cmd":"ls"}}]}`)
 	reversed := resp
 	if renamed {
-		reversed = reverseRemapOAuthToolNames(resp)
+		reversed = reverseRemapOAuthToolNames(resp, dynReverse)
 	}
 	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "bash" {
 		t.Fatalf("content.0.name = %q, want %q", got, "bash")
+	}
+}
+
+func TestRemapOAuthToolNames_TaskCreate_StaticMapping(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"taskcreate","description":"Create a task","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"taskcreate"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	out, renamed, dynReverse := remapOAuthToolNames(body)
+	if !renamed {
+		t.Fatalf("renamed = false, want true")
+	}
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "TaskCreate" {
+		t.Fatalf("tools.0.name = %q, want %q", got, "TaskCreate")
+	}
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "TaskCreate" {
+		t.Fatalf("tool_choice.name = %q, want %q", got, "TaskCreate")
+	}
+	if len(dynReverse) != 0 {
+		t.Fatalf("dynReverse = %#v, want empty for static mappings", dynReverse)
+	}
+
+	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"TaskCreate","input":{"title":"todo"}}]}`)
+	reversed := reverseRemapOAuthToolNames(resp, dynReverse)
+	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "taskcreate" {
+		t.Fatalf("content.0.name = %q, want %q", got, "taskcreate")
+	}
+}
+
+func TestRemapOAuthToolNames_TaskCreateSnakeCase_ReverseApplied(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"task_create","description":"Create a task","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"task_create"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	out, renamed, dynReverse := remapOAuthToolNames(body)
+	if !renamed {
+		t.Fatalf("renamed = false, want true")
+	}
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "TaskCreate" {
+		t.Fatalf("tools.0.name = %q, want %q", got, "TaskCreate")
+	}
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "TaskCreate" {
+		t.Fatalf("tool_choice.name = %q, want %q", got, "TaskCreate")
+	}
+	if got := dynReverse["TaskCreate"]; got != "task_create" {
+		t.Fatalf("dynReverse[TaskCreate] = %q, want %q", got, "task_create")
+	}
+
+	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"TaskCreate","input":{"title":"todo"}}]}`)
+	reversed := reverseRemapOAuthToolNames(resp, dynReverse)
+	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "task_create" {
+		t.Fatalf("content.0.name = %q, want %q", got, "task_create")
+	}
+}
+
+func TestApplyClaudeHeaders_OAuthUsesBaselineFingerprintAndBetas(t *testing.T) {
+	resetClaudeDeviceProfileCache()
+
+	req := newClaudeHeaderTestRequest(t, http.Header{
+		"User-Agent":                  []string{"opencode/1.4.5"},
+		"Anthropic-Beta":              []string{"custom-beta-1"},
+		"X-Stainless-Package-Version": []string{"0.10.0"},
+		"X-Stainless-Runtime-Version": []string{"v18.0.0"},
+		"X-Stainless-Os":              []string{"Windows"},
+		"X-Stainless-Arch":            []string{"x64"},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-oat-test"}}
+
+	applyClaudeHeaders(req, auth, "sk-ant-oat-test", false, nil, &config.Config{}, oauthClientOther)
+
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.108 (external, sdk-cli)", "0.81.0", "v24.3.0", "MacOS", "arm64")
+	betas := req.Header.Get("Anthropic-Beta")
+	if strings.Contains(betas, "custom-beta-1") {
+		t.Fatalf("Anthropic-Beta should ignore client OAuth betas, got %q", betas)
+	}
+	for _, beta := range []string{"claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "effort-2025-11-24"} {
+		if !strings.Contains(betas, beta) {
+			t.Fatalf("Anthropic-Beta = %q, missing %q", betas, beta)
+		}
+	}
+}
+
+func TestClaudeExecutor_OfficialClaudeCLIOAuthPreservesIncomingFingerprint(t *testing.T) {
+	var seenHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	req := newClaudeHeaderTestRequest(t, http.Header{
+		"User-Agent":                  []string{"claude-cli/2.1.120 (external, vscode)"},
+		"Anthropic-Beta":              []string{"official-beta-1,oauth-2025-04-20"},
+		"X-Stainless-Package-Version": []string{"0.90.0"},
+		"X-Stainless-Runtime-Version": []string{"v24.9.0"},
+		"X-Stainless-Os":              []string{"Linux"},
+		"X-Stainless-Arch":            []string{"x64"},
+	})
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat-test",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"thinking":{"type":"adaptive"}}`)
+
+	_, err := executor.Execute(req.Context(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if seenHeaders == nil {
+		t.Fatal("expected upstream request headers to be captured")
+	}
+	assertClaudeFingerprint(t, seenHeaders, "claude-cli/2.1.120 (external, vscode)", "0.90.0", "v24.9.0", "Linux", "x64")
+	if got := seenHeaders.Get("Anthropic-Beta"); !strings.Contains(got, "official-beta-1") {
+		t.Fatalf("Anthropic-Beta = %q, want to preserve official client beta headers", got)
 	}
 }
