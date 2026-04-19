@@ -118,8 +118,15 @@ func snakeCaseToTitleCase(name string) string {
 // dynamicOAuthToolRename attempts to rename a tool name using snakeCaseToTitleCase
 // when it is not found in the static oauthToolRenameMap. Returns the new name and
 // true if a rename was performed, or the original name and false otherwise.
-// Collision check ensures no clash with existing static map values.
+// It first normalizes snake_case/kebab-case variants to existing static mappings
+// so names like task_create still resolve to TaskCreate while preserving the
+// original downstream tool name through the dynamic reverse-map path.
 func dynamicOAuthToolRename(name string) (string, bool) {
+	normalizedKey := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(name, "_", ""), "-", ""))
+	if mappedName, ok := oauthToolRenameMap[normalizedKey]; ok && mappedName != name {
+		return mappedName, true
+	}
+
 	newName := snakeCaseToTitleCase(name)
 	if newName == name {
 		return name, false
@@ -1269,13 +1276,13 @@ func remapOAuthToolNames(body []byte) ([]byte, bool, map[string]string) {
 // mappings for dynamically renamed tools (from snakeCaseToTitleCase fallback).
 func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byte {
 	resolveOrigName := func(name string) (string, bool) {
-		if origName, ok := oauthToolRenameReverseMap[name]; ok {
-			return origName, true
-		}
 		if dynReverse != nil {
 			if origName, ok := dynReverse[name]; ok {
 				return origName, true
 			}
+		}
+		if origName, ok := oauthToolRenameReverseMap[name]; ok {
+			return origName, true
 		}
 		return name, false
 	}
@@ -1309,13 +1316,13 @@ func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byt
 // dynReverse contains per-request mappings for dynamically renamed tools.
 func reverseRemapOAuthToolNamesFromStreamLine(line []byte, dynReverse map[string]string) []byte {
 	resolveOrigName := func(name string) (string, bool) {
-		if origName, ok := oauthToolRenameReverseMap[name]; ok {
-			return origName, true
-		}
 		if dynReverse != nil {
 			if origName, ok := dynReverse[name]; ok {
 				return origName, true
 			}
+		}
+		if origName, ok := oauthToolRenameReverseMap[name]; ok {
+			return origName, true
 		}
 		return name, false
 	}

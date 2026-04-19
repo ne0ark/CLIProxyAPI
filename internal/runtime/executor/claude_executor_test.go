@@ -2069,6 +2069,30 @@ func TestRemapOAuthToolNames_TaskCreate_StaticMapping(t *testing.T) {
 	}
 }
 
+func TestRemapOAuthToolNames_TaskCreateSnakeCase_ReverseApplied(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"task_create","description":"Create a task","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"task_create"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	out, renamed, dynReverse := remapOAuthToolNames(body)
+	if !renamed {
+		t.Fatalf("renamed = false, want true")
+	}
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "TaskCreate" {
+		t.Fatalf("tools.0.name = %q, want %q", got, "TaskCreate")
+	}
+	if got := gjson.GetBytes(out, "tool_choice.name").String(); got != "TaskCreate" {
+		t.Fatalf("tool_choice.name = %q, want %q", got, "TaskCreate")
+	}
+	if got := dynReverse["TaskCreate"]; got != "task_create" {
+		t.Fatalf("dynReverse[TaskCreate] = %q, want %q", got, "task_create")
+	}
+
+	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_01","name":"TaskCreate","input":{"title":"todo"}}]}`)
+	reversed := reverseRemapOAuthToolNames(resp, dynReverse)
+	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "task_create" {
+		t.Fatalf("content.0.name = %q, want %q", got, "task_create")
+	}
+}
+
 func TestApplyClaudeHeaders_OAuthUsesBaselineFingerprintAndBetas(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 
