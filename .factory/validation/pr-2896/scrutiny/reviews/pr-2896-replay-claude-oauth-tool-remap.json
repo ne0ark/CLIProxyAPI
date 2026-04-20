@@ -1,0 +1,64 @@
+{
+  "featureId": "pr-2896-replay-claude-oauth-tool-remap",
+  "milestone": "pr-2896",
+  "reviewer": "scrutiny-feature-reviewer",
+  "reviewedAt": "2026-04-20T22:00:00Z",
+  "commitId": "c830e8a92618a4de38a5dd15f9803701a4979c3f",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The replay correctly recreates the remaining upstream PR #2896 delta: ordered rename-before-prefix prepare helper, ordered prefix-strip-before-reverse restore helpers, nested tool_reference restoration in reverseRemapOAuthToolNames, and executor-path integration. All three executor call sites (Execute, ExecuteStream passthrough, ExecuteStream translated) plus CountTokens now use the centralized prepare/restore flow. Early-return guards added to both reverse functions for empty dynReverse maps. Seven targeted regression tests cover prefix ordering, tool_reference restoration in both non-stream and SSE paths, and full Execute/ExecuteStream/CountTokens round-trip wiring. All tests pass. Diff is bounded to claude_executor.go and claude_executor_test.go only.",
+    "issues": [
+      {
+        "file": "internal/runtime/executor/claude_executor.go",
+        "line": 1347,
+        "severity": "non_blocking",
+        "description": "reverseRemapOAuthToolNamesFromStreamLine has a redundant nil check inside resolveOrigName (dynReverse == nil) that can never be true since the function already early-returns when len(dynReverse) == 0, and a nil map also has len 0. Same pattern exists in reverseRemapOAuthToolNames at line 1295. This is pre-existing, not introduced by this replay, so it is non-blocking."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The pr-replay-worker skill references .factory/init.sh as a shell script and a 'file-group-reviewer' subagent type. On Windows, neither is available (no sh, no such subagent). The worker correctly substituted equivalent commands. The skill procedure should note Windows compatibility requirements or provide Windows-equivalent commands.",
+      "evidence": "Handoff skillFeedback.deviations lists two deviations: ran 'go mod download' directly instead of init.sh, and used 'worker' subagent instead of 'file-group-reviewer'. Both were justified substitutions."
+    }
+  ],
+  "assertions": {
+    "VAL-PR2896-001": {
+      "status": "pass",
+      "evidence": "TestRestoreClaudeOAuthToolNamesFromResponse_RestoresToolReferencesAfterStrippingPrefix verifies non-stream response restoration preserves TitleCase 'Bash' and restores lowercase 'glob' and 'task_create'. TestClaudeExecutor_Execute_OAuthToolNamesRoundTripPreservesToolReferences confirms end-to-end non-stream Execute path preserves original client casing for tool_use blocks (content.0.name='Bash', content.1.name='glob')."
+    },
+    "VAL-PR2896-002": {
+      "status": "pass",
+      "evidence": "TestRestoreClaudeOAuthToolNamesFromStreamLine_RestoresToolReferencesAfterStrippingPrefix verifies SSE line restoration preserves 'Bash' and restores 'glob' for tool_use and tool_reference content blocks. TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Passthrough confirms end-to-end SSE passthrough path restores mixed-case names correctly."
+    },
+    "VAL-PR2896-003": {
+      "status": "pass",
+      "evidence": "TestPrepareClaudeOAuthToolNamesForUpstream_PrefixesOnlyAfterRenames verifies dynReverse does NOT contain 'Bash' (a TitleCase-only tool), confirming TitleCase-only inputs are a no-op on reverse remap. The restore functions' empty-dynReverse early-return guards also ensure no-op behavior when no renames occurred."
+    },
+    "VAL-PR2896-004": {
+      "status": "pass",
+      "evidence": "TestPrepareClaudeOAuthToolNamesForUpstream_PrefixesOnlyAfterRenames verifies dynReverse['Glob']='glob' and dynReverse['TaskCreate']='task_create', confirming lowercase and snake_case renames round-trip correctly through the per-request reverse map."
+    },
+    "VAL-PR2896-005": {
+      "status": "pass",
+      "evidence": "TestPrepareClaudeOAuthToolNamesForUpstream_PrefixesOnlyAfterRenames verifies the prefix is applied AFTER rename (tools.0.name='proxy_Bash', tools.1.name='proxy_Glob'), and TestRestoreClaudeOAuthToolNamesFromResponse_RestoresToolReferencesAfterStrippingPrefix confirms prefixes are stripped BEFORE reverse remap, preserving tool identity in both directions."
+    },
+    "VAL-PR2896-006": {
+      "status": "pass",
+      "evidence": "TestClaudeExecutor_Execute_OAuthToolNamesRoundTripPreservesToolReferences covers non-stream Execute path. TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Passthrough covers direct SSE passthrough path. TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Translated covers the format-translation streaming path. All three pass."
+    },
+    "VAL-PR2896-007": {
+      "status": "pass",
+      "evidence": "git diff --stat shows exactly 2 files changed: internal/runtime/executor/claude_executor.go and internal/runtime/executor/claude_executor_test.go. No changes outside the Claude executor slice."
+    },
+    "VAL-PR2896-008": {
+      "status": "pass",
+      "evidence": "TestRestoreClaudeOAuthToolNamesFromResponse_RestoresToolReferencesAfterStrippingPrefix verifies tool_reference at content.2.tool_name restored to 'glob', and nested tool_reference inside tool_result at content.3.content.0.tool_name restored to 'task_create'. TestRestoreClaudeOAuthToolNamesFromStreamLine also verifies tool_reference SSE blocks. reverseRemapOAuthToolNames has explicit case 'tool_result' handling at line 1323 for nested tool_reference payloads."
+    }
+  },
+  "addressesFailureFrom": null,
+  "summary": "PASS. The replay faithfully recreates the remaining upstream PR #2896 delta with correct ordered prepare/restore helpers, nested tool_reference restoration, and comprehensive regression tests covering all four executor call sites. Scope is tightly bounded to the Claude executor slice (2 files). All 7 new tests pass alongside existing tests. One non-blocking observation about a pre-existing redundant nil check in resolveOrigName. The implementation correctly handles the core bug: per-request reverse mapping ensures mixed-case client tool names (like Amp CLI's Bash+glob) round-trip correctly without corrupting TitleCase tools."
+}
