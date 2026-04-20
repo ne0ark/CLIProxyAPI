@@ -1,0 +1,82 @@
+{
+  "milestone": "pr-2896",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 8,
+    "passed": 8,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-PR2896-001",
+    "VAL-PR2896-002",
+    "VAL-PR2896-003",
+    "VAL-PR2896-004",
+    "VAL-PR2896-005",
+    "VAL-PR2896-006",
+    "VAL-PR2896-007",
+    "VAL-PR2896-008"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [
+    {
+      "target": "user-testing.md",
+      "description": "Created user-testing guide with concurrency guidance (max 2), Go-test surface isolation rules, and tool documentation",
+      "source": "setup"
+    }
+  ],
+  "previousRound": null,
+  "evidence": {
+    "goTestExecutor": "16 remap/restore/OAuth-related tests PASS in 0.205s",
+    "goTestFullSuite": "All repository tests PASS (go test -count=1 -p 16 ./...)",
+    "goBuild": "Successful disposable server build",
+    "scopeCheck": {
+      "upstreamPR2896": {
+        "files": ["internal/runtime/executor/claude_executor.go", "internal/runtime/executor/claude_executor_test.go"],
+        "baseRefName": "dev"
+      },
+      "localCommits": {
+        "34e51e9b": "Initial replay (claude_executor.go + claude_executor_test.go)",
+        "c830e8a9": "Follow-up fix (claude_executor.go + claude_executor_test.go)"
+      },
+      "confined": true
+    },
+    "assertionTestMapping": {
+      "VAL-PR2896-001": {
+        "tests": ["TestRemapOAuthToolNames_MixedCase_PreservesClientCasing", "TestClaudeExecutor_Execute_OAuthToolNamesRoundTripPreservesToolReferences"],
+        "verifies": "Mixed-case non-stream responses preserve original client casing"
+      },
+      "VAL-PR2896-002": {
+        "tests": ["TestRemapOAuthToolNames_MixedCase_PreservesClientCasing", "TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Passthrough", "TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Translated"],
+        "verifies": "Mixed-case SSE tool_use lines preserve original client casing"
+      },
+      "VAL-PR2896-003": {
+        "tests": ["TestRemapOAuthToolNames_TitleCase_NoReverseNeeded"],
+        "verifies": "TitleCase-only inputs are a no-op on reverse remap"
+      },
+      "VAL-PR2896-004": {
+        "tests": ["TestRemapOAuthToolNames_Lowercase_ReverseApplied", "TestRemapOAuthToolNames_TaskCreate_StaticMapping", "TestRemapOAuthToolNames_TaskCreateSnakeCase_ReverseApplied"],
+        "verifies": "Legitimate lowercase and snake_case renames round-trip correctly"
+      },
+      "VAL-PR2896-005": {
+        "tests": ["TestPrepareClaudeOAuthToolNamesForUpstream_PrefixesOnlyAfterRenames", "TestRestoreClaudeOAuthToolNamesFromResponse_RestoresToolReferencesAfterStrippingPrefix", "TestRestoreClaudeOAuthToolNamesFromStreamLine_RestoresToolReferencesAfterStrippingPrefix"],
+        "verifies": "Prefixing and reverse remap preserve tool identity in both directions"
+      },
+      "VAL-PR2896-006": {
+        "tests": ["TestClaudeExecutor_Execute_OAuthToolNamesRoundTripPreservesToolReferences", "TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Passthrough", "TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Translated", "TestClaudeExecutor_CountTokens_OAuthToolNamesPreparedBeforeRequest"],
+        "buildVerification": "go build -o test-output.exe ./cmd/server succeeded",
+        "verifies": "Non-stream and both streaming executor paths preserve remap behavior"
+      },
+      "VAL-PR2896-007": {
+        "evidence": "Upstream PR #2896 touches only claude_executor.go and claude_executor_test.go. Local commits 34e51e9b and c830e8a9 touch only claude_executor.go and claude_executor_test.go.",
+        "verifies": "Recreated PR 2896 scope stays limited to the Claude OAuth remap slice"
+      },
+      "VAL-PR2896-008": {
+        "tests": ["TestRestoreClaudeOAuthToolNamesFromResponse_RestoresToolReferencesAfterStrippingPrefix", "TestRestoreClaudeOAuthToolNamesFromStreamLine_RestoresToolReferencesAfterStrippingPrefix", "TestClaudeExecutor_Execute_OAuthToolNamesRoundTripPreservesToolReferences"],
+        "verifies": "tool_reference names round-trip with the same restore rules as tool_use names"
+      }
+    }
+  }
+}

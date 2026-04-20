@@ -1,47 +1,26 @@
-# User Testing
-
-Testing surfaces, validation tools, and concurrency guidance for this mission.
-
-**What belongs here:** validation surfaces, tooling, setup notes, evidence expectations, and concurrency guidance.
-**What does NOT belong here:** implementation details that belong in `architecture.md` or feature-specific instructions that belong in worker skills.
-
----
-
-## Validation Surface
-
-This mission is repository-centric rather than browser-centric.
-
-### Surface: GitHub PR inspection
-
-- Use `gh pr view`, `gh pr diff`, and related read-only GitHub inspection to confirm upstream intent, file scope, review comments, and PR status.
-- Evidence should capture the upstream PR number, title, target branch, and changed-file scope.
-
-### Surface: Local git replay state
-
-- Use `git status`, `git diff`, `git log`, `git reflog`, and worker handoff command logs to verify replay happens on local `dev`, stays scoped, and does not touch review artifacts or off-limits branches/remotes.
-- Evidence should show branch state, local diff scope, and the absence of unintended staged/committed files.
-
-### Surface: Go validation
-
-- Use targeted `go test` commands for touched packages first.
-- Use disposable server compile verification after code changes.
-- Use full-suite `go test ./...` before a milestone is considered merge-ready.
-- For PR `#2914`, targeted `go test -race` on `internal/api`, `internal/api/handlers/management`, and `internal/config` is part of the expected validation surface.
+# User Testing Guide
 
 ## Validation Concurrency
 
-### Repository/GitHub validation surface
+Max concurrent validators: **2**
 
-- Max concurrent validators: `2`
-- Rationale:
-  - Machine headroom is high, but `go test` already parallelizes internally.
-  - Full-suite runtime is short (~10 seconds in the dry run), so aggressive validator fan-out is unnecessary.
-  - Keeping concurrency at `2` reduces cache/disk contention and avoids noisy overlap while still allowing efficient milestone validation.
+The primary validation surface for this project is repository-level Go testing (not browser UI).
+Tests run in-process with no external service dependencies. Concurrency is bounded by
+machine CPU/memory rather than shared state conflicts.
 
-## Expected evidence shape
+## Flow Validator Guidance: go-test
 
-- Command outputs for targeted package tests
-- Command output for disposable `./cmd/server` build verification
-- Command output for full `go test ./...`
-- GitHub PR metadata for the replayed PR
-- Local git diff/log evidence showing replay scope and branch hygiene
+The Go test surface validates behavioral contracts through unit tests in
+`internal/runtime/executor/`. Tests are fully isolated (no shared state between tests)
+and can run concurrently without interference.
+
+### Isolation rules
+- Each test creates its own `httptest.NewServer` instance
+- No shared global state between tests
+- Tests do not depend on external services or network access
+
+### Tools
+- `go test ./internal/runtime/executor/... -count=1 -v` for targeted executor tests
+- `go test -count=1 -p 16 ./...` for full suite
+- `go build -o test-output.exe ./cmd/server` for compile verification
+- `gh pr view` and `git diff` for scope checks
