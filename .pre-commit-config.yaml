@@ -38,6 +38,20 @@ repos:
         stages:
           - pre-push
 
+      - id: gocyclo-watcher-diff
+        name: gocyclo ./internal/watcher/diff
+        entry: go
+        args:
+          - run
+          - github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
+          - -over
+          - "13"
+          - ./internal/watcher/diff
+        language: system
+        pass_filenames: false
+        stages:
+          - pre-push
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

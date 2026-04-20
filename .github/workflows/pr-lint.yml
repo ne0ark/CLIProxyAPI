@@ -21,6 +21,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Run gocyclo on watcher diff
+        run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 13 ./internal/watcher/diff
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
