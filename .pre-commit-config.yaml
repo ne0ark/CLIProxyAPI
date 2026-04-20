@@ -1,0 +1,76 @@
+minimum_pre_commit_version: '4.0.0'
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+default_stages:
+  - pre-commit
+
+repos:
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt
+        args:
+          - -w
+        language: system
+        types:
+          - go
+        stages:
+          - pre-commit
+
+      - id: go-test
+        name: go test ./...
+        entry: go
+        args:
+          - test
+          - ./...
+        language: system
+        pass_filenames: false
+        stages:
+          - pre-push
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+        stages:
+          - pre-commit
+      - id: check-json
+        stages:
+          - pre-commit
+      - id: check-merge-conflict
+        stages:
+          - pre-commit
+      - id: check-added-large-files
+        args:
+          - --maxkb=1024
+        stages:
+          - pre-commit
+      - id: check-case-conflict
+        stages:
+          - pre-commit
+      - id: detect-private-key
+        stages:
+          - pre-commit
+      - id: fix-byte-order-marker
+        stages:
+          - pre-commit
+      - id: end-of-file-fixer
+        stages:
+          - pre-commit
+      - id: trailing-whitespace
+        args:
+          - --markdown-linebreak-ext=md
+        stages:
+          - pre-commit
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.64.8
+    hooks:
+      - id: golangci-lint
+        stages:
+          - pre-commit
+      - id: golangci-lint-full
+        stages:
+          - pre-push
