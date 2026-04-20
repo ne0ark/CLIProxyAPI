@@ -478,6 +478,7 @@ func (s *Service) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var err error
 
 	usage.StartDefault(ctx)
 
@@ -501,20 +502,12 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}
 
-	tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if _, err = s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
 		return err
-	}
-	if tokenResult == nil {
-		tokenResult = &TokenClientResult{}
 	}
 
-	apiKeyResult, err := s.apiKeyProvider.Load(ctx, s.cfg)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if _, err = s.apiKeyProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
 		return err
-	}
-	if apiKeyResult == nil {
-		apiKeyResult = &APIKeyClientResult{}
 	}
 
 	// legacy clients removed; no caches to refresh
@@ -969,7 +962,6 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			for i := range s.cfg.OpenAICompatibility {
 				compat := &s.cfg.OpenAICompatibility[i]
 				if strings.EqualFold(compat.Name, compatName) {
-					isCompatAuth = true
 					// Convert compatibility models to registry models
 					ms := make([]*ModelInfo, 0, len(compat.Models))
 					for j := range compat.Models {

@@ -779,17 +779,13 @@ func statusFromError(err error) int {
 }
 
 func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
-	resolvedModelName := modelName
 	initialSuffix := thinking.ParseSuffix(modelName)
+	resolvedModelName := util.ResolveAutoModel(modelName)
 	if initialSuffix.ModelName == "auto" {
 		resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
 		if initialSuffix.HasSuffix {
 			resolvedModelName = fmt.Sprintf("%s(%s)", resolvedBase, initialSuffix.RawSuffix)
-		} else {
-			resolvedModelName = resolvedBase
 		}
-	} else {
-		resolvedModelName = util.ResolveAutoModel(modelName)
 	}
 
 	parsed := thinking.ParseSuffix(resolvedModelName)

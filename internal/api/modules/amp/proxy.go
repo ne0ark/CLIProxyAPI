@@ -87,10 +87,7 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 		removeQueryValuesMatching(req, "key", clientKey)
 		removeQueryValuesMatching(req, "auth_token", clientKey)
 
-		// Preserve correlation headers for debugging
-		if req.Header.Get("X-Request-ID") == "" {
-			// Could generate one here if needed
-		}
+		// Preserve any caller-provided correlation headers for debugging.
 
 		// Note: We do NOT filter Anthropic-Beta headers in the proxy path
 		// Users going through ampcode.com proxy are paying for the service and should get all features
