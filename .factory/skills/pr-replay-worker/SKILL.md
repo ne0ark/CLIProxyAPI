@@ -23,6 +23,11 @@ This worker does not push to GitHub. It prepares validated local commits only.
 - `CLIProxyAPI change playbook` — invoke before tracing or editing code so the touched subsystem matches repo architecture and guardrails.
 - `review` — invoke after the local diff is ready and before the final validation sweep to adversarially review the recreated change for correctness gaps.
 
+## Windows Compatibility Notes
+
+- If `.factory/init.sh` cannot be executed directly in the current Windows shell, run the equivalent setup commands manually and note the substitution in the handoff.
+- If a named reviewer subagent referenced by a skill is unavailable in this environment, use the available `worker` subagent as the fallback reviewer and note that substitution in the handoff.
+
 ## Work Procedure
 
 1. **Anchor the replay**
