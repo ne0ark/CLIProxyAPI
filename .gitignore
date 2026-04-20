@@ -46,6 +46,13 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+.factory/*
+!.factory/skills/
+!.factory/skills/**
+!.factory/droids/
+!.factory/droids/**
+.git-rewrite/
+.git-rewrite*.sh
 
 # macOS
 .DS_Store
