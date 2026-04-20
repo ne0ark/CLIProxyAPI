@@ -1,0 +1,16 @@
+run:
+  timeout: 10m
+  tests: false
+
+linters-settings:
+  dupl:
+    threshold: 100
+
+linters:
+  disable-all: true
+  enable:
+    - dupl
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

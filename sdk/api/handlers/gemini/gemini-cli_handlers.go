@@ -226,23 +226,7 @@ func (h *GeminiCLIAPIHandler) forwardCLIStream(c *gin.Context, flusher http.Flus
 			}
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-			if errMsg == nil {
-				return
-			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
-				errText = errMsg.Error.Error()
-			}
-			body := handlers.BuildErrorResponseBody(status, errText)
-			if alt == "" {
-				_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(body))
-			} else {
-				_, _ = c.Writer.Write(body)
-			}
+			writeGeminiStreamTerminalError(c.Writer, alt, errMsg)
 		},
 	})
 }

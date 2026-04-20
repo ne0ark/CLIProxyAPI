@@ -52,6 +52,19 @@ repos:
         stages:
           - pre-push
 
+      - id: golangci-dupl-sdk-api-handlers
+        name: golangci-lint dupl ./sdk/api/handlers/...
+        entry: golangci-lint
+        args:
+          - run
+          - --config
+          - .golangci.dupl-sdk-api-handlers.yml
+          - ./sdk/api/handlers/...
+        language: system
+        pass_filenames: false
+        stages:
+          - pre-push
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

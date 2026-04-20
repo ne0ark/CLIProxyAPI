@@ -469,6 +469,18 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	return h.executeNonStreamingWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, h.AuthManager.Execute)
+}
+
+type authManagerNonStreamingExecute func(context.Context, []string, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error)
+
+func (h *BaseAPIHandler) executeNonStreamingWithAuthManager(
+	ctx context.Context,
+	handlerType, modelName string,
+	rawJSON []byte,
+	alt string,
+	execute authManagerNonStreamingExecute,
+) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
 	if errMsg != nil {
 		return nil, nil, errMsg
@@ -490,7 +502,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
-	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
+	resp, err := execute(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		status := http.StatusInternalServerError
@@ -516,48 +528,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
-	if errMsg != nil {
-		return nil, nil, errMsg
-	}
-	reqMeta := requestExecutionMetadata(ctx)
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	payload := rawJSON
-	if len(payload) == 0 {
-		payload = nil
-	}
-	req := coreexecutor.Request{
-		Model:   normalizedModel,
-		Payload: payload,
-	}
-	opts := coreexecutor.Options{
-		Stream:          false,
-		Alt:             alt,
-		OriginalRequest: rawJSON,
-		SourceFormat:    sdktranslator.FromString(handlerType),
-	}
-	opts.Metadata = reqMeta
-	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
-	if err != nil {
-		err = enrichAuthSelectionError(err, providers, normalizedModel)
-		status := http.StatusInternalServerError
-		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
-	}
-	if !PassthroughHeadersEnabled(h.Cfg) {
-		return resp.Payload, nil, nil
-	}
-	return resp.Payload, FilterUpstreamHeaders(resp.Headers), nil
+	return h.executeNonStreamingWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, h.AuthManager.ExecuteCount)
 }
 
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
