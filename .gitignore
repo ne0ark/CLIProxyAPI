@@ -47,6 +47,10 @@ GEMINI.md
 _bmad/*
 _bmad-output/*
 .factory/*
+!.factory/init.sh
+!.factory/services.yaml
+!.factory/library/
+!.factory/library/**
 !.factory/skills/
 !.factory/skills/**
 !.factory/droids/
