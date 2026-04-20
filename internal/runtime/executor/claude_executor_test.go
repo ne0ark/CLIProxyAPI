@@ -2143,6 +2143,305 @@ func TestRemapOAuthToolNames_MixedCase_PreservesClientCasing(t *testing.T) {
 	}
 }
 
+func TestPrepareClaudeOAuthToolNamesForUpstream_PrefixesOnlyAfterRenames(t *testing.T) {
+	body := []byte(`{"tools":[` +
+		`{"name":"Bash","input_schema":{"type":"object"}},` +
+		`{"name":"glob","input_schema":{"type":"object"}},` +
+		`{"name":"task_create","input_schema":{"type":"object"}}` +
+		`],` +
+		`"tool_choice":{"type":"tool","name":"glob"},` +
+		`"messages":[{"role":"assistant","content":[` +
+		`{"type":"tool_use","id":"toolu_01","name":"Bash","input":{}},` +
+		`{"type":"tool_use","id":"toolu_02","name":"glob","input":{}},` +
+		`{"type":"tool_reference","tool_name":"glob"},` +
+		`{"type":"tool_result","tool_use_id":"toolu_02","content":[{"type":"tool_reference","tool_name":"task_create"}]}` +
+		`]}]}`)
+
+	out, renamed, dynReverse := prepareClaudeOAuthToolNamesForUpstream(body, "proxy_", false)
+	if !renamed {
+		t.Fatal("renamed = false, want true")
+	}
+
+	assertPath := func(path, want string) {
+		t.Helper()
+		if got := gjson.GetBytes(out, path).String(); got != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+
+	assertPath("tools.0.name", "proxy_Bash")
+	assertPath("tools.1.name", "proxy_Glob")
+	assertPath("tools.2.name", "proxy_TaskCreate")
+	assertPath("tool_choice.name", "proxy_Glob")
+	assertPath("messages.0.content.0.name", "proxy_Bash")
+	assertPath("messages.0.content.1.name", "proxy_Glob")
+	assertPath("messages.0.content.2.tool_name", "proxy_Glob")
+	assertPath("messages.0.content.3.content.0.tool_name", "proxy_TaskCreate")
+
+	if _, ok := dynReverse["Bash"]; ok {
+		t.Fatalf("dynReverse[Bash] set, want absent")
+	}
+	if got := dynReverse["Glob"]; got != "glob" {
+		t.Fatalf("dynReverse[Glob] = %q, want %q", got, "glob")
+	}
+	if got := dynReverse["TaskCreate"]; got != "task_create" {
+		t.Fatalf("dynReverse[TaskCreate] = %q, want %q", got, "task_create")
+	}
+}
+
+func TestRestoreClaudeOAuthToolNamesFromResponse_RestoresToolReferencesAfterStrippingPrefix(t *testing.T) {
+	resp := []byte(`{"content":[` +
+		`{"type":"tool_use","id":"toolu_01","name":"proxy_Bash","input":{}},` +
+		`{"type":"tool_use","id":"toolu_02","name":"proxy_Glob","input":{}},` +
+		`{"type":"tool_reference","tool_name":"proxy_Glob"},` +
+		`{"type":"tool_result","tool_use_id":"toolu_02","content":[{"type":"tool_reference","tool_name":"proxy_TaskCreate"}]}` +
+		`]}`)
+	dynReverse := map[string]string{
+		"Glob":       "glob",
+		"TaskCreate": "task_create",
+	}
+
+	out := restoreClaudeOAuthToolNamesFromResponse(resp, "proxy_", false, dynReverse)
+
+	if got := gjson.GetBytes(out, "content.0.name").String(); got != "Bash" {
+		t.Fatalf("content.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(out, "content.1.name").String(); got != "glob" {
+		t.Fatalf("content.1.name = %q, want %q", got, "glob")
+	}
+	if got := gjson.GetBytes(out, "content.2.tool_name").String(); got != "glob" {
+		t.Fatalf("content.2.tool_name = %q, want %q", got, "glob")
+	}
+	if got := gjson.GetBytes(out, "content.3.content.0.tool_name").String(); got != "task_create" {
+		t.Fatalf("content.3.content.0.tool_name = %q, want %q", got, "task_create")
+	}
+}
+
+func TestRestoreClaudeOAuthToolNamesFromStreamLine_RestoresToolReferencesAfterStrippingPrefix(t *testing.T) {
+	dynReverse := map[string]string{"Glob": "glob"}
+
+	bashLine := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"proxy_Bash","input":{}}}`)
+	if got := string(restoreClaudeOAuthToolNamesFromStreamLine(bashLine, "proxy_", false, dynReverse)); !strings.Contains(got, `"name":"Bash"`) {
+		t.Fatalf("Bash line = %q, want to contain %q", got, `"name":"Bash"`)
+	}
+
+	globLine := []byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_02","name":"proxy_Glob","input":{}}}`)
+	if got := string(restoreClaudeOAuthToolNamesFromStreamLine(globLine, "proxy_", false, dynReverse)); !strings.Contains(got, `"name":"glob"`) {
+		t.Fatalf("Glob line = %q, want to contain %q", got, `"name":"glob"`)
+	}
+
+	referenceLine := []byte(`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_reference","tool_name":"proxy_Glob"}}`)
+	if got := string(restoreClaudeOAuthToolNamesFromStreamLine(referenceLine, "proxy_", false, dynReverse)); !strings.Contains(got, `"tool_name":"glob"`) {
+		t.Fatalf("tool_reference line = %q, want to contain %q", got, `"tool_name":"glob"`)
+	}
+}
+
+func TestClaudeExecutor_Execute_OAuthToolNamesRoundTripPreservesToolReferences(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-3-5-sonnet-20241022","role":"assistant","content":[` +
+			`{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"cmd":"ls"}},` +
+			`{"type":"tool_use","id":"toolu_02","name":"Glob","input":{"pattern":"*.go"}},` +
+			`{"type":"tool_reference","tool_name":"Glob"},` +
+			`{"type":"tool_result","tool_use_id":"toolu_02","content":[{"type":"tool_reference","tool_name":"TaskCreate"}]}` +
+			`],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat-test",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"tools":[` +
+		`{"name":"Bash","description":"Run shell","input_schema":{"type":"object"}},` +
+		`{"name":"glob","description":"Glob files","input_schema":{"type":"object"}},` +
+		`{"name":"task_create","description":"Create task","input_schema":{"type":"object"}}` +
+		`],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gjson.GetBytes(seenBody, "tools.0.name").String(); got != "Bash" {
+		t.Fatalf("upstream tools.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(seenBody, "tools.1.name").String(); got != "Glob" {
+		t.Fatalf("upstream tools.1.name = %q, want %q", got, "Glob")
+	}
+	if got := gjson.GetBytes(seenBody, "tools.2.name").String(); got != "TaskCreate" {
+		t.Fatalf("upstream tools.2.name = %q, want %q", got, "TaskCreate")
+	}
+
+	if got := gjson.GetBytes(resp.Payload, "content.0.name").String(); got != "Bash" {
+		t.Fatalf("content.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(resp.Payload, "content.1.name").String(); got != "glob" {
+		t.Fatalf("content.1.name = %q, want %q", got, "glob")
+	}
+	if got := gjson.GetBytes(resp.Payload, "content.2.tool_name").String(); got != "glob" {
+		t.Fatalf("content.2.tool_name = %q, want %q", got, "glob")
+	}
+	if got := gjson.GetBytes(resp.Payload, "content.3.content.0.tool_name").String(); got != "task_create" {
+		t.Fatalf("content.3.content.0.tool_name = %q, want %q", got, "task_create")
+	}
+}
+
+func TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Passthrough(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"Bash\",\"input\":{}}}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_02\",\"name\":\"Glob\",\"input\":{}}}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_reference\",\"tool_name\":\"Glob\"}}\n" +
+			"data: {\"type\":\"message_stop\"}\n"))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat-test",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"tools":[{"name":"Bash","input_schema":{"type":"object"}},{"name":"glob","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var combined strings.Builder
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+		combined.Write(chunk.Payload)
+	}
+
+	if got := gjson.GetBytes(seenBody, "tools.0.name").String(); got != "Bash" {
+		t.Fatalf("upstream tools.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(seenBody, "tools.1.name").String(); got != "Glob" {
+		t.Fatalf("upstream tools.1.name = %q, want %q", got, "Glob")
+	}
+	if got := combined.String(); !strings.Contains(got, `"name":"Bash"`) || !strings.Contains(got, `"name":"glob"`) || !strings.Contains(got, `"tool_name":"glob"`) {
+		t.Fatalf("combined passthrough stream = %q, want restored Bash/glob/tool_reference names", got)
+	}
+}
+
+func TestClaudeExecutor_ExecuteStream_OAuthToolNamesRoundTrip_Translated(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("" +
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"Bash\",\"input\":{}}}\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_02\",\"name\":\"Glob\",\"input\":{}}}\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"pattern\\\":\\\"*.go\\\"}\"}}\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":1}\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n" +
+			"data: {\"type\":\"message_stop\"}\n"))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat-test",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[` +
+		`{"type":"function","function":{"name":"Bash","description":"Run shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}},` +
+		`{"type":"function","function":{"name":"glob","description":"Glob files","parameters":{"type":"object","properties":{"pattern":{"type":"string"}}}}}` +
+		`]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var combined strings.Builder
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+		combined.Write(chunk.Payload)
+	}
+
+	if got := gjson.GetBytes(seenBody, "tools.0.name").String(); got != "Bash" {
+		t.Fatalf("upstream tools.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(seenBody, "tools.1.name").String(); got != "Glob" {
+		t.Fatalf("upstream tools.1.name = %q, want %q", got, "Glob")
+	}
+	if got := combined.String(); !strings.Contains(got, `"function":{"name":"Bash"`) || !strings.Contains(got, `"function":{"name":"glob"`) {
+		t.Fatalf("combined translated stream = %q, want restored OpenAI function names", got)
+	}
+	if strings.Contains(combined.String(), `"function":{"name":"Glob"`) {
+		t.Fatalf("combined translated stream = %q, want Glob restored to glob before translation", combined.String())
+	}
+}
+
+func TestClaudeExecutor_CountTokens_OAuthToolNamesPreparedBeforeRequest(t *testing.T) {
+	var seenPath string
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens":42}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-ant-oat-test",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"tools":[{"name":"Bash","input_schema":{"type":"object"}},{"name":"glob","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"glob"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	_, err := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("CountTokens error: %v", err)
+	}
+
+	if seenPath != "/v1/messages/count_tokens" {
+		t.Fatalf("count_tokens path = %q, want %q", seenPath, "/v1/messages/count_tokens")
+	}
+	if got := gjson.GetBytes(seenBody, "tools.0.name").String(); got != "Bash" {
+		t.Fatalf("upstream tools.0.name = %q, want %q", got, "Bash")
+	}
+	if got := gjson.GetBytes(seenBody, "tools.1.name").String(); got != "Glob" {
+		t.Fatalf("upstream tools.1.name = %q, want %q", got, "Glob")
+	}
+	if got := gjson.GetBytes(seenBody, "tool_choice.name").String(); got != "Glob" {
+		t.Fatalf("upstream tool_choice.name = %q, want %q", got, "Glob")
+	}
+}
+
 func TestApplyClaudeHeaders_OAuthUsesBaselineFingerprintAndBetas(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 

@@ -257,17 +257,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	clientSource := detectOAuthClientSource(getClientUserAgent(ctx))
 	oauthToolNamesRemapped := false
 	var oauthDynReverse map[string]string
-	if oauthToken && !auth.ToolPrefixDisabled() {
-		bodyForUpstream = applyClaudeToolPrefix(body, claudeToolPrefix)
-	}
 	if oauthToken && clientSource != oauthClientOpenCode && clientSource != oauthClientClaudeCLI {
 		bodyForUpstream = ensureDefaultEffort(bodyForUpstream, "medium")
 	}
-	// Remap third-party tool names to Claude Code equivalents and remove
-	// tools without official counterparts. This prevents Anthropic from
-	// fingerprinting the request as third-party via tool naming patterns.
 	if oauthToken {
-		bodyForUpstream, oauthToolNamesRemapped, oauthDynReverse = remapOAuthToolNames(bodyForUpstream)
+		bodyForUpstream, oauthToolNamesRemapped, oauthDynReverse = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
 	// Claude Code always computes cch; missing or invalid cch is a detectable fingerprint.
@@ -365,20 +359,18 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	} else {
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
 	}
-	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-		data = stripClaudeToolPrefixFromResponse(data, claudeToolPrefix)
-	}
-	// Reverse the OAuth tool name remap so the downstream client sees original names.
-	// When stream=true (format translation), data is SSE-formatted; apply line-by-line reverse.
-	if isClaudeOAuthToken(apiKey) && oauthToolNamesRemapped {
+	// Reverse the Claude OAuth request transforms so the downstream client sees
+	// the original tool names it sent. When stream=true (format translation),
+	// data is SSE-formatted; apply the restore flow line-by-line.
+	if isClaudeOAuthToken(apiKey) && (oauthToolNamesRemapped || !auth.ToolPrefixDisabled()) {
 		if stream {
 			var reversedLines [][]byte
 			for _, line := range bytes.Split(data, []byte("\n")) {
-				reversedLines = append(reversedLines, reverseRemapOAuthToolNamesFromStreamLine(line, oauthDynReverse))
+				reversedLines = append(reversedLines, restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthDynReverse))
 			}
 			data = bytes.Join(reversedLines, []byte("\n"))
 		} else {
-			data = reverseRemapOAuthToolNames(data, oauthDynReverse)
+			data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthDynReverse)
 		}
 	}
 	var param any
@@ -467,17 +459,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	clientSource := detectOAuthClientSource(getClientUserAgent(ctx))
 	oauthToolNamesRemapped := false
 	var oauthDynReverse map[string]string
-	if oauthToken && !auth.ToolPrefixDisabled() {
-		bodyForUpstream = applyClaudeToolPrefix(body, claudeToolPrefix)
-	}
 	if oauthToken && clientSource != oauthClientOpenCode && clientSource != oauthClientClaudeCLI {
 		bodyForUpstream = ensureDefaultEffort(bodyForUpstream, "medium")
 	}
-	// Remap third-party tool names to Claude Code equivalents and remove
-	// tools without official counterparts. This prevents Anthropic from
-	// fingerprinting the request as third-party via tool naming patterns.
 	if oauthToken {
-		bodyForUpstream, oauthToolNamesRemapped, oauthDynReverse = remapOAuthToolNames(bodyForUpstream)
+		bodyForUpstream, oauthToolNamesRemapped, oauthDynReverse = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
 	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
@@ -572,11 +558,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 					reporter.Publish(ctx, detail)
 				}
-				if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-					line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
-				}
-				if isClaudeOAuthToken(apiKey) && oauthToolNamesRemapped {
-					line = reverseRemapOAuthToolNamesFromStreamLine(line, oauthDynReverse)
+				if isClaudeOAuthToken(apiKey) && (oauthToolNamesRemapped || !auth.ToolPrefixDisabled()) {
+					line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthDynReverse)
 				}
 				// Forward the line as-is to preserve SSE format
 				cloned := make([]byte, len(line)+1)
@@ -602,11 +585,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
-			if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-				line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
-			}
-			if isClaudeOAuthToken(apiKey) && oauthToolNamesRemapped {
-				line = reverseRemapOAuthToolNamesFromStreamLine(line, oauthDynReverse)
+			if isClaudeOAuthToken(apiKey) && (oauthToolNamesRemapped || !auth.ToolPrefixDisabled()) {
+				line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthDynReverse)
 			}
 			chunks := sdktranslator.TranslateStream(
 				ctx,
@@ -662,15 +642,11 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	extraBetas = ensureTaskBudgetsBeta(extraBetas, body)
 	oauthToken := isClaudeOAuthToken(apiKey)
 	clientSource := detectOAuthClientSource(getClientUserAgent(ctx))
-	if oauthToken && !auth.ToolPrefixDisabled() {
-		body = applyClaudeToolPrefix(body, claudeToolPrefix)
-	}
 	if oauthToken && clientSource != oauthClientOpenCode && clientSource != oauthClientClaudeCLI {
 		body = ensureDefaultEffort(body, "medium")
 	}
-	// Remap tool names for OAuth token requests to avoid third-party fingerprinting.
 	if oauthToken {
-		body, _, _ = remapOAuthToolNames(body)
+		body, _, _ = prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
@@ -1132,6 +1108,35 @@ const (
 	oauthClientOther
 )
 
+// prepareClaudeOAuthToolNamesForUpstream applies Claude OAuth tool-name
+// transforms in request order: rename first, then prefix. This preserves the
+// per-request reverse map even when a non-empty prefix is configured.
+func prepareClaudeOAuthToolNamesForUpstream(body []byte, prefix string, prefixDisabled bool) ([]byte, bool, map[string]string) {
+	body, renamed, dynReverse := remapOAuthToolNames(body)
+	if !prefixDisabled {
+		body = applyClaudeToolPrefix(body, prefix)
+	}
+	return body, renamed, dynReverse
+}
+
+// restoreClaudeOAuthToolNamesFromResponse undoes Claude OAuth tool-name
+// transforms for non-stream responses in reverse order.
+func restoreClaudeOAuthToolNamesFromResponse(body []byte, prefix string, prefixDisabled bool, dynReverse map[string]string) []byte {
+	if !prefixDisabled {
+		body = stripClaudeToolPrefixFromResponse(body, prefix)
+	}
+	return reverseRemapOAuthToolNames(body, dynReverse)
+}
+
+// restoreClaudeOAuthToolNamesFromStreamLine undoes Claude OAuth tool-name
+// transforms for SSE lines in reverse order.
+func restoreClaudeOAuthToolNamesFromStreamLine(line []byte, prefix string, prefixDisabled bool, dynReverse map[string]string) []byte {
+	if !prefixDisabled {
+		line = stripClaudeToolPrefixFromStreamLine(line, prefix)
+	}
+	return reverseRemapOAuthToolNamesFromStreamLine(line, dynReverse)
+}
+
 // remapOAuthToolNames renames third-party tool names to Claude Code equivalents
 // and removes tools without an official counterpart. This prevents Anthropic from
 // fingerprinting the request as a third-party client via tool naming patterns.
@@ -1141,7 +1146,7 @@ const (
 // (they just become orphaned, which is safe for Claude).
 func remapOAuthToolNames(body []byte) ([]byte, bool, map[string]string) {
 	renamed := false
-	dynReverse := map[string]string{}
+	dynReverse := make(map[string]string, len(oauthToolRenameMap))
 
 	// resolveNewName tries the static map first, then falls back to dynamic
 	// snakeCaseToTitleCase conversion. Both static and dynamic renames are
@@ -1283,6 +1288,9 @@ func remapOAuthToolNames(body []byte) ([]byte, bool, map[string]string) {
 // pass. Names the client already sent in TitleCase pass through untouched, which is
 // required for mixed-casing clients (e.g. Amp CLI sends `Bash` alongside `glob`).
 func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byte {
+	if len(dynReverse) == 0 {
+		return body
+	}
 	resolveOrigName := func(name string) (string, bool) {
 		if dynReverse == nil {
 			return name, false
@@ -1312,6 +1320,21 @@ func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byt
 				path := fmt.Sprintf("content.%d.tool_name", index.Int())
 				body, _ = sjson.SetBytes(body, path, origName)
 			}
+		case "tool_result":
+			nestedContent := part.Get("content")
+			if nestedContent.Exists() && nestedContent.IsArray() {
+				nestedContent.ForEach(func(nestedIndex, nestedPart gjson.Result) bool {
+					if nestedPart.Get("type").String() != "tool_reference" {
+						return true
+					}
+					nestedToolName := nestedPart.Get("tool_name").String()
+					if origName, ok := resolveOrigName(nestedToolName); ok {
+						path := fmt.Sprintf("content.%d.content.%d.tool_name", index.Int(), nestedIndex.Int())
+						body, _ = sjson.SetBytes(body, path, origName)
+					}
+					return true
+				})
+			}
 		}
 		return true
 	})
@@ -1321,6 +1344,9 @@ func reverseRemapOAuthToolNames(body []byte, dynReverse map[string]string) []byt
 // reverseRemapOAuthToolNamesFromStreamLine reverses the tool name mapping for SSE stream lines.
 // Driven exclusively by the per-request dynReverse map. See reverseRemapOAuthToolNames.
 func reverseRemapOAuthToolNamesFromStreamLine(line []byte, dynReverse map[string]string) []byte {
+	if len(dynReverse) == 0 {
+		return line
+	}
 	resolveOrigName := func(name string) (string, bool) {
 		if dynReverse == nil {
 			return name, false
