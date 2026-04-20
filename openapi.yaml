@@ -1,0 +1,1287 @@
+openapi: 3.1.0
+info:
+  title: CLIProxyAPI HTTP API
+  version: 1.0.0
+  description: |-
+    OpenAPI schema for the built-in HTTP APIs exposed by CLIProxyAPI.
+
+    This specification covers the main OpenAI-compatible runtime routes, Gemini-compatible routes,
+    and the most commonly used management endpoints implemented in `internal/api/server.go` and
+    `internal/api/handlers/management`.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+tags:
+  - name: Health
+  - name: Runtime
+  - name: Gemini
+  - name: Management
+components:
+  securitySchemes:
+    accessBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+      description: "Runtime API authentication. Most deployments use `Authorization: Bearer <key>`."
+    managementKey:
+      type: apiKey
+      in: header
+      name: X-Management-Key
+      description: Management API key header accepted by `Handler.Middleware`.
+    managementBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Management key
+      description: "Management API key sent as `Authorization: Bearer <key>`."
+  schemas:
+    ErrorDetail:
+      type: object
+      required:
+        - message
+        - type
+      properties:
+        message:
+          type: string
+        type:
+          type: string
+        code:
+          type: string
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+    HealthStatus:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
+    RootInfo:
+      type: object
+      required:
+        - message
+        - endpoints
+      properties:
+        message:
+          type: string
+          example: CLI Proxy API Server
+        endpoints:
+          type: array
+          items:
+            type: string
+    ModelSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+        owned_by:
+          type: string
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        supportedGenerationMethods:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+    OpenAIModelList:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          example: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelSummary'
+    ClaudeModelList:
+      type: object
+      required:
+        - data
+        - has_more
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelSummary'
+        has_more:
+          type: boolean
+        first_id:
+          type: string
+        last_id:
+          type: string
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum:
+            - system
+            - user
+            - assistant
+            - tool
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+      additionalProperties: true
+    ChatCompletionsRequest:
+      type: object
+      required:
+        - model
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        input:
+          description: OpenAI Responses-style input also accepted on this endpoint and converted internally.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        instructions:
+          type: string
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+        stream:
+          type: boolean
+      additionalProperties: true
+    ChatCompletionsResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    CompletionRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+        prompt:
+          type: string
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+        stream:
+          type: boolean
+      additionalProperties: true
+    CompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    ClaudeMessagesRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        system:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        max_tokens:
+          type: integer
+        stream:
+          type: boolean
+      additionalProperties: true
+    ClaudeMessageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        role:
+          type: string
+        content:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    CountTokensResponse:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+      additionalProperties: true
+    OpenAIResponsesRequest:
+      type: object
+      required:
+        - model
+      properties:
+        model:
+          type: string
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        instructions:
+          type: string
+        stream:
+          type: boolean
+      additionalProperties: true
+    OpenAIResponsesResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        status:
+          type: string
+        output:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        output_text:
+          type: string
+      additionalProperties: true
+    GeminiModelsResponse:
+      type: object
+      required:
+        - models
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelSummary'
+    GeminiGenerateContentRequest:
+      type: object
+      properties:
+        contents:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        generationConfig:
+          type: object
+          additionalProperties: true
+        safetySettings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+    GeminiGenerateContentResponse:
+      type: object
+      properties:
+        candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        promptFeedback:
+          type: object
+          additionalProperties: true
+        usageMetadata:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    ConfigDocument:
+      type: object
+      additionalProperties: true
+    ConfigMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        changed:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+    UsageStatisticsResponse:
+      type: object
+      properties:
+        usage:
+          type: object
+          additionalProperties: true
+        failed_requests:
+          type: integer
+      additionalProperties: true
+    AuthFileSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        auth_index:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        label:
+          type: string
+        disabled:
+          type: boolean
+        status:
+          type: string
+        email:
+          type: string
+        path:
+          type: string
+      additionalProperties: true
+    AuthFileListResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthFileSummary'
+    AuthFileModelsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelSummary'
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        uploaded:
+          type: integer
+        deleted:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+        failed:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+    AuthFileStatusPatchRequest:
+      type: object
+      required:
+        - name
+        - disabled
+      properties:
+        name:
+          type: string
+        disabled:
+          type: boolean
+    AuthFileFieldsPatchRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        prefix:
+          type: string
+        proxy_url:
+          type: string
+          format: uri
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        priority:
+          type: integer
+        note:
+          type: string
+    ModelDefinitionsResponse:
+      type: object
+      properties:
+        channel:
+          type: string
+        models:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    OAuthBootstrapResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        url:
+          type: string
+          format: uri
+        state:
+          type: string
+    OAuthCallbackRequest:
+      type: object
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          enum:
+            - anthropic
+            - codex
+            - gemini
+            - antigravity
+            - kimi
+        redirect_url:
+          type: string
+          format: uri
+        code:
+          type: string
+        state:
+          type: string
+        error:
+          type: string
+    AuthStatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - wait
+            - error
+        error:
+          type: string
+    VertexImportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        auth-file:
+          type: string
+        project_id:
+          type: string
+        email:
+          type: string
+        location:
+          type: string
+      additionalProperties: true
+paths:
+  /healthz:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+  /:
+    get:
+      tags:
+        - Health
+      summary: Describe the runtime API entrypoint
+      operationId: getRootInfo
+      responses:
+        '200':
+          description: Root endpoint summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RootInfo'
+  /v1/models:
+    get:
+      tags:
+        - Runtime
+      summary: List available runtime models
+      description: Returns an OpenAI-compatible list by default. Claude CLI callers receive a Claude-style list shape.
+      operationId: listRuntimeModels
+      security:
+        - accessBearer: []
+      responses:
+        '200':
+          description: Available models
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OpenAIModelList'
+                  - $ref: '#/components/schemas/ClaudeModelList'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/chat/completions:
+    post:
+      tags:
+        - Runtime
+      summary: Run an OpenAI-compatible chat completion
+      description: When `stream=true`, the server upgrades the response to Server-Sent Events.
+      operationId: createChatCompletion
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionsRequest'
+      responses:
+        '200':
+          description: Completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionsResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/completions:
+    post:
+      tags:
+        - Runtime
+      summary: Run an OpenAI-compatible text completion
+      description: This route is internally converted to chat completions.
+      operationId: createCompletion
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletionRequest'
+      responses:
+        '200':
+          description: Completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletionResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/messages:
+    post:
+      tags:
+        - Runtime
+      summary: Run a Claude-compatible message request
+      description: Returns SSE when `stream=true`, otherwise returns the translated upstream JSON payload.
+      operationId: createClaudeMessage
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaudeMessagesRequest'
+      responses:
+        '200':
+          description: Claude message response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaudeMessageResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/messages/count_tokens:
+    post:
+      tags:
+        - Runtime
+      summary: Count Claude message tokens
+      operationId: countClaudeTokens
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaudeMessagesRequest'
+      responses:
+        '200':
+          description: Token count payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountTokensResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/responses:
+    get:
+      tags:
+        - Runtime
+      summary: OpenAI Responses websocket endpoint
+      description: Upgrades to a websocket connection for the Responses API transport.
+      operationId: openResponsesWebsocket
+      security:
+        - accessBearer: []
+      responses:
+        '101':
+          description: Switching protocols
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Runtime
+      summary: Run an OpenAI Responses request
+      description: Returns JSON for non-streaming requests and SSE when `stream=true`.
+      operationId: createResponse
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIResponsesRequest'
+      responses:
+        '200':
+          description: Responses API result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIResponsesResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/responses/compact:
+    post:
+      tags:
+        - Runtime
+      summary: Run a compact non-streaming OpenAI Responses request
+      description: Rejects `stream=true` and returns a compact JSON payload.
+      operationId: createCompactResponse
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIResponsesRequest'
+      responses:
+        '200':
+          description: Compact responses result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIResponsesResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1beta/models:
+    get:
+      tags:
+        - Gemini
+      summary: List Gemini-compatible models
+      operationId: listGeminiModels
+      security:
+        - accessBearer: []
+      responses:
+        '200':
+          description: Gemini model list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeminiModelsResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1beta/models/{action}:
+    parameters:
+      - name: action
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name for GET requests, or `model:method` for POST requests.
+        examples:
+          getModel:
+            value: gemini-2.5-flash
+          generate:
+            value: gemini-2.5-flash:generateContent
+    get:
+      tags:
+        - Gemini
+      summary: Get Gemini model metadata
+      operationId: getGeminiModel
+      security:
+        - accessBearer: []
+      responses:
+        '200':
+          description: Gemini model metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelSummary'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Gemini
+      summary: Invoke a Gemini model method
+      description: Supported methods are `generateContent`, `streamGenerateContent`, and `countTokens`.
+      operationId: invokeGeminiModelMethod
+      security:
+        - accessBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeminiGenerateContentRequest'
+      responses:
+        '200':
+          description: Gemini model result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/GeminiGenerateContentResponse'
+                  - $ref: '#/components/schemas/CountTokensResponse'
+        default:
+          description: Error response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v0/management/config:
+    get:
+      tags:
+        - Management
+      summary: Get the in-memory server config
+      operationId: getManagementConfig
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: Current config snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigDocument'
+  /v0/management/config.yaml:
+    get:
+      tags:
+        - Management
+      summary: Download the raw config YAML
+      operationId: getManagementConfigYaml
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: Raw YAML content
+          content:
+            application/yaml:
+              schema:
+                type: string
+    put:
+      tags:
+        - Management
+      summary: Replace the config YAML
+      operationId: putManagementConfigYaml
+      security:
+        - managementKey: []
+        - managementBearer: []
+      requestBody:
+        required: true
+        content:
+          application/yaml:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Config written and reloaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMutationResponse'
+        '422':
+          description: Invalid config payload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /v0/management/usage:
+    get:
+      tags:
+        - Management
+      summary: Read in-memory request statistics
+      operationId: getUsageStatistics
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: Usage statistics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageStatisticsResponse'
+  /v0/management/auth-files:
+    get:
+      tags:
+        - Management
+      summary: List auth files
+      operationId: listAuthFiles
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: Auth files registered in the auth manager or on disk
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthFileListResponse'
+    post:
+      tags:
+        - Management
+      summary: Upload one or more auth files
+      description: Multipart upload is the primary flow. The handler also supports raw JSON bodies when `?name=<file>.json` is provided.
+      operationId: uploadAuthFile
+      security:
+        - managementKey: []
+        - managementBearer: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '207':
+          description: Partial upload result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+    delete:
+      tags:
+        - Management
+      summary: Delete one or more auth files
+      operationId: deleteAuthFile
+      security:
+        - managementKey: []
+        - managementBearer: []
+      parameters:
+        - name: all
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+          description: One or more auth file names to delete.
+      responses:
+        '200':
+          description: Delete result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '207':
+          description: Partial delete result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /v0/management/auth-files/models:
+    get:
+      tags:
+        - Management
+      summary: List models reachable through a specific auth file
+      operationId: getAuthFileModels
+      security:
+        - managementKey: []
+        - managementBearer: []
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Models for the selected auth file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthFileModelsResponse'
+  /v0/management/auth-files/status:
+    patch:
+      tags:
+        - Management
+      summary: Enable or disable an auth file
+      operationId: patchAuthFileStatus
+      security:
+        - managementKey: []
+        - managementBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthFileStatusPatchRequest'
+      responses:
+        '200':
+          description: Updated auth file status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /v0/management/auth-files/fields:
+    patch:
+      tags:
+        - Management
+      summary: Update editable auth file fields
+      operationId: patchAuthFileFields
+      security:
+        - managementKey: []
+        - managementBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthFileFieldsPatchRequest'
+      responses:
+        '200':
+          description: Updated auth file metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /v0/management/model-definitions/{channel}:
+    get:
+      tags:
+        - Management
+      summary: Get static model definitions for a channel
+      operationId: getModelDefinitions
+      security:
+        - managementKey: []
+        - managementBearer: []
+      parameters:
+        - name: channel
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Static model definitions for the channel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelDefinitionsResponse'
+  /v0/management/vertex/import:
+    post:
+      tags:
+        - Management
+      summary: Import a Vertex service account credential
+      operationId: importVertexCredential
+      security:
+        - managementKey: []
+        - managementBearer: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                location:
+                  type: string
+      responses:
+        '200':
+          description: Imported Vertex credential
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VertexImportResponse'
+  /v0/management/anthropic-auth-url:
+    get:
+      tags:
+        - Management
+      summary: Start a Claude OAuth flow
+      operationId: getAnthropicAuthUrl
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: OAuth bootstrap URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthBootstrapResponse'
+  /v0/management/codex-auth-url:
+    get:
+      tags:
+        - Management
+      summary: Start a Codex OAuth flow
+      operationId: getCodexAuthUrl
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: OAuth bootstrap URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthBootstrapResponse'
+  /v0/management/gemini-cli-auth-url:
+    get:
+      tags:
+        - Management
+      summary: Start a Gemini CLI OAuth flow
+      operationId: getGeminiCliAuthUrl
+      security:
+        - managementKey: []
+        - managementBearer: []
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional Gemini project override.
+      responses:
+        '200':
+          description: OAuth bootstrap URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthBootstrapResponse'
+  /v0/management/antigravity-auth-url:
+    get:
+      tags:
+        - Management
+      summary: Start an Antigravity OAuth flow
+      operationId: getAntigravityAuthUrl
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: OAuth bootstrap URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthBootstrapResponse'
+  /v0/management/kimi-auth-url:
+    get:
+      tags:
+        - Management
+      summary: Start a Kimi OAuth flow
+      operationId: getKimiAuthUrl
+      security:
+        - managementKey: []
+        - managementBearer: []
+      responses:
+        '200':
+          description: OAuth bootstrap URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthBootstrapResponse'
+  /v0/management/oauth-callback:
+    post:
+      tags:
+        - Management
+      summary: Persist an OAuth callback for a pending session
+      operationId: postOAuthCallback
+      security:
+        - managementKey: []
+        - managementBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthCallbackRequest'
+      responses:
+        '200':
+          description: Callback persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          description: Invalid callback payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          description: Unknown or expired state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '409':
+          description: OAuth flow is not pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /v0/management/get-auth-status:
+    get:
+      tags:
+        - Management
+      summary: Query the status of a pending OAuth flow
+      operationId: getAuthStatus
+      security:
+        - managementKey: []
+        - managementBearer: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current OAuth state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStatusResponse'
+        '400':
+          description: Invalid state value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStatusResponse'
