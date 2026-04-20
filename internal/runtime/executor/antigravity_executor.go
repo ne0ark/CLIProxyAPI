@@ -636,36 +636,6 @@ func (e *AntigravityExecutor) attemptCreditsFallback(
 	return nil, true
 }
 
-func (e *AntigravityExecutor) handleDirectCreditsFailure(ctx context.Context, auth *cliproxyauth.Auth, modelName string, reqErr error) {
-	if reqErr != nil {
-		if shouldForcePermanentDisableCredits(reqErrBody(reqErr)) {
-			clearAntigravityPreferCredits(auth, modelName)
-			markAntigravityCreditsPermanentlyDisabled(auth)
-			return
-		}
-
-		if antigravityHasExplicitCreditsBalanceExhaustedReason(reqErrBody(reqErr)) {
-			clearAntigravityPreferCredits(auth, modelName)
-			markAntigravityCreditsPermanentlyDisabled(auth)
-			return
-		}
-
-		helps.RecordAPIResponseError(ctx, e.cfg, reqErr)
-	}
-	clearAntigravityPreferCredits(auth, modelName)
-	recordAntigravityCreditsFailure(auth, time.Now())
-}
-func reqErrBody(reqErr error) []byte {
-	if reqErr == nil {
-		return nil
-	}
-	msg := reqErr.Error()
-	if strings.TrimSpace(msg) == "" {
-		return nil
-	}
-	return []byte(msg)
-}
-
 func shouldForcePermanentDisableCredits(body []byte) bool {
 	return antigravityHasExplicitCreditsBalanceExhaustedReason(body)
 }

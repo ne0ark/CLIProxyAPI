@@ -293,10 +293,6 @@ func (m dashboardModel) renderDashboard(cfg, usage map[string]any, authFiles []m
 	return sb.String()
 }
 
-func formatKV(key, value string) string {
-	return fmt.Sprintf("  %s %s\n", labelStyle.Render(key+":"), valueStyle.Render(value))
-}
-
 func getString(m map[string]any, key string) string {
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {

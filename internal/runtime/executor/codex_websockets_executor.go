@@ -1272,30 +1272,6 @@ func (e *CodexWebsocketsExecutor) CloseExecutionSession(sessionID string) {
 	e.closeExecutionSession(sess, "session_closed")
 }
 
-func (e *CodexWebsocketsExecutor) closeAllExecutionSessions(reason string) {
-	if e == nil {
-		return
-	}
-
-	store := e.store
-	if store == nil {
-		store = globalCodexWebsocketSessionStore
-	}
-	store.mu.Lock()
-	sessions := make([]*codexWebsocketSession, 0, len(store.sessions))
-	for sessionID, sess := range store.sessions {
-		delete(store.sessions, sessionID)
-		if sess != nil {
-			sessions = append(sessions, sess)
-		}
-	}
-	store.mu.Unlock()
-
-	for i := range sessions {
-		e.closeExecutionSession(sessions[i], reason)
-	}
-}
-
 func (e *CodexWebsocketsExecutor) closeExecutionSession(sess *codexWebsocketSession, reason string) {
 	closeCodexWebsocketSession(sess, reason)
 }
