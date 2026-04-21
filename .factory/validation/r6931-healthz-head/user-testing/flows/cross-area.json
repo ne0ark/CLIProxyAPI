@@ -1,0 +1,305 @@
+{
+  "groupId": "cross-area",
+  "testedAt": "2026-04-21T12:58:00Z",
+  "isolation": {
+    "workingDirectory": "G:\\Droid.Claude\\CLIProxyAPI",
+    "branch": "dev",
+    "noExternalServices": true,
+    "toolsAvailable": ["git", "go", "gh"]
+  },
+  "toolsUsed": ["git log", "git status", "git branch", "git remote", "git diff", "git reflog", "git show", "git merge-base", "go build", "go test", "gh pr view"],
+  "assertions": [
+    {
+      "id": "VAL-CROSS-001",
+      "title": "Approved mission scope stays limited to PRs 2896, 2895, 2923, and 2914 plus the approved v6.9.31 milestones",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Verified upstream PR base refs",
+          "expected": "All four PRs target dev",
+          "observed": "PR 2896 baseRefName=dev, PR 2895 baseRefName=dev, PR 2923 baseRefName=dev, PR 2914 baseRefName=dev — all OPEN targeting dev"
+        },
+        {
+          "action": "Checked commits on local dev since origin/dev",
+          "expected": "Only commits mapping to the four approved PRs and three approved v6.9.31 milestones",
+          "observed": "26 commits ahead: replay commits for PR 2896 (c830e8a9), PR 2895 (ac2e1cfc), PR 2923 (761ddf08), PR 2914 (3094474f + 57d53acc), r6931-auth-refresh-backoff (b76ce52f), r6931-codex-stream-output (e78be8f1), r6931-healthz-head (bb07ca2c), plus mission infrastructure/scrutiny/validation chore commits"
+        },
+        {
+          "action": "Verified Host-header forwarding fix is NOT replayed on dev",
+          "expected": "Host-header forwarding fix (f9384d22) not in origin/dev..HEAD range",
+          "observed": "f9384d22 exists only on branch fix/forward-custom-host-header, not on local dev — no replay milestone exists"
+        },
+        {
+          "action": "Verified features.json milestone mapping",
+          "expected": "7 implementation milestones: 4 PR replays + 3 v6.9.31 changes",
+          "observed": "features.json shows exactly: pr-2896, pr-2895, pr-2923, pr-2914, r6931-auth-refresh-backoff, r6931-codex-stream-output, r6931-healthz-head — no Host-header milestone"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "gh pr view for PRs 2896, 2895, 2923, 2914 all returned baseRefName=dev",
+        "files": [
+          "r6931-healthz-head/cross-area/commits-on-dev.txt",
+          "r6931-healthz-head/cross-area/diff-stat.txt"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-002",
+      "title": "All replay work happens on local dev",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Checked current branch",
+          "expected": "Current branch is dev",
+          "observed": "git branch -vv shows '* dev 43bd832a [origin/dev: ahead 26]'"
+        },
+        {
+          "action": "Verified local history is rooted on origin/dev",
+          "expected": "All replay commits are children of origin/dev",
+          "observed": "git log --oneline origin/dev..HEAD shows 26 commits on dev after origin/dev — all replay/infrastructure commits"
+        },
+        {
+          "action": "Checked reflog for branch switches",
+          "expected": "No evidence of commits being made on other branches",
+          "observed": "reflog shows all 26 entries are HEAD@{0}..HEAD@{27} on dev with no branch switches during replay activity"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": [
+          "r6931-healthz-head/cross-area/git-branch.txt",
+          "r6931-healthz-head/cross-area/reflog.txt",
+          "r6931-healthz-head/cross-area/commits-on-dev.txt"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-003",
+      "title": "Upstream and contributor branches remain untouched",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Checked remote configuration",
+          "expected": "No push URLs pointing to upstream or contributor branches",
+          "observed": "git remote -v shows origin=ne0ark/CLIProxyAPI, upstream=router-for-me/CLIProxyAPI.git, skrabe=skrabe/CLIProxyAPIPlus.git — all standard fetch/push URLs"
+        },
+        {
+          "action": "Verified no push occurred during mission",
+          "expected": "Local dev is ahead of origin/dev but no force-push evidence",
+          "observed": "dev is 26 commits ahead of origin/dev with no evidence of pushing to upstream or contributor branches in handoff notes; all worker reports state 'no push was performed'"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": [
+          "r6931-healthz-head/cross-area/git-remotes.txt"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-004",
+      "title": "Diff hygiene excludes unrelated files and local review artifacts",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Checked git status for review artifacts",
+          "expected": "pr2914.diff and pr2914.utf8.diff remain untracked (??)",
+          "observed": "git status --porcelain shows only '?? pr2914.diff' and '?? pr2914.utf8.diff' — both untracked, not staged"
+        },
+        {
+          "action": "Checked each replay commit's diff stat",
+          "expected": "Each replay commit contains only intended repo edits",
+          "observed": "c830e8a9 (PR2896): 2 files, executor slice; ac2e1cfc (PR2895): 1 file, auth conductor test; 761ddf08 (PR2923): 2 files, management upload; 3094474f (PR2914): 12 files, ACL/config/management; 57d53acc (PR2914 fixup): 16 files, ACL gaps; b76ce52f (auth backoff): 2 files, conductor; e78be8f1 (codex): 2 files, executor; bb07ca2c (healthz): 2 files, server — all bounded"
+        },
+        {
+          "action": "Verified no review artifacts in any commit",
+          "expected": "pr2914.diff and pr2914.utf8.diff not in any diff stat",
+          "observed": "Confirmed — neither file appears in git diff --stat origin/dev..HEAD (63 files changed, neither review artifact included)"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": [
+          "r6931-healthz-head/cross-area/git-status.txt",
+          "r6931-healthz-head/cross-area/diff-stat.txt"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-005",
+      "title": "Each approved PR or v6.9.31 milestone clears strict validation gates before merge consideration",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Verified gofmt in handoff notes for each milestone",
+          "expected": "Each worker ran gofmt on changed files",
+          "observed": "All handoff reports show 'gofmt -w' ran on touched Go files before commit, and pre-commit hooks include gofmt checks"
+        },
+        {
+          "action": "Ran disposable server build verification",
+          "expected": "go build -o test-output.exe ./cmd/server succeeds",
+          "observed": "BUILD_OK — disposable server compile succeeded, test-output.exe created and removed"
+        },
+        {
+          "action": "Ran full repository test suite",
+          "expected": "go test -count=1 -p 16 ./... passes with no failures",
+          "observed": "All test packages passed (ok status) with no failures — exit code 0"
+        },
+        {
+          "action": "Verified targeted tests in handoff notes",
+          "expected": "Each milestone ran scoped package tests before full suite",
+          "observed": "PR2896: executor tests; PR2895: auth tests; PR2923: management tests; PR2914: api+management+config tests; auth-backoff: auth tests; codex: executor tests; healthz: api tests — all documented in handoffs"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": []
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-006",
+      "title": "Final integrated dev state remains linear and merge-ready across the full approved scope",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Checked commit list for linear history",
+          "expected": "Clean linear commit list with only approved recreations",
+          "observed": "git log --oneline origin/dev..HEAD shows 26 linear commits: 7 implementation commits (one per milestone, plus one PR2914 fixup), 2 factory/mission chore commits, and 17 validation/scrutiny/user-testing chore commits — no abandoned partial work"
+        },
+        {
+          "action": "Checked for unexpected tracked/staged leftovers",
+          "expected": "git status --short shows no unexpected tracked/staged files",
+          "observed": "git status --porcelain shows only '?? pr2914.diff' and '?? pr2914.utf8.diff' — both pre-existing untracked review artifacts"
+        },
+        {
+          "action": "Ran integrated validation",
+          "expected": "go build and go test pass on final state",
+          "observed": "BUILD_OK and go test -count=1 -p 16 ./... passed with all packages green"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": [
+          "r6931-healthz-head/cross-area/commits-on-dev.txt",
+          "r6931-healthz-head/cross-area/git-status.txt"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-007",
+      "title": "Later PR and v6.9.31 replays are reviewed against the evolving local dev branch",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Checked handoff notes for replay order and dev-state awareness",
+          "expected": "Each later replay evaluated against updated dev state",
+          "observed": "Replay order: PR2896 (c830e8a9) → PR2895 (ac2e1cfc) → PR2923 (761ddf08) → PR2914 (3094474f then 57d53acc) → auth-backoff (b76ce52f) → codex (e78be8f1) → healthz (bb07ca2c). Handoff notes for each confirm comparison against 'current local dev state produced by earlier accepted recreations'"
+        },
+        {
+          "action": "Verified PR2914 fixup commit exists",
+          "expected": "PR2914 had a follow-up fix adapting to evolving dev",
+          "observed": "57d53acc 'fix(access): close ACL replay gaps' added Amp provider alias enforcement, v1beta1 bridge ACLs, and race-test fixes — evidence of reviewing against updated dev"
+        },
+        {
+          "action": "Verified auth-backoff worker compared against current dev",
+          "expected": "Auth backoff replay aware of PR2914 changes on dev",
+          "observed": "Handoff notes: 'found local dev missing the ineffective-refresh throttle... replayed the minimal backoff logic' — confirms comparison against post-PR2914 dev"
+        },
+        {
+          "action": "Verified healthz worker compared against current dev",
+          "expected": "Healthz replay aware of auth-backoff and codex changes",
+          "observed": "Handoff notes: 'found local dev still returned 404 for HEAD /healthz' — confirms testing against the evolved dev branch with all prior replays applied"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": [
+          "r6931-healthz-head/cross-area/commits-on-dev.txt",
+          "r6931-healthz-head/cross-area/reflog.txt"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-008",
+      "title": "The mission preserves one milestone per approved PR or approved v6.9.31 change",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Read features.json and counted milestones",
+          "expected": "One milestone per approved PR and one per approved v6.9.31 change, no Host-header milestone",
+          "observed": "features.json contains exactly 7 implementation features (excluding scrutiny/user-testing validators): pr-2896 (milestone pr-2896), pr-2895 (milestone pr-2895), pr-2923 (milestone pr-2923), pr-2914 (milestone pr-2914), r6931-auth-refresh-backoff (milestone r6931-auth-refresh-backoff), r6931-codex-stream-output (milestone r6931-codex-stream-output), r6931-healthz-head (milestone r6931-healthz-head) — 4 PR milestones + 3 v6.9.31 milestones"
+        },
+        {
+          "action": "Verified no Host-header forwarding replay milestone exists",
+          "expected": "No feature with milestone referencing host-header forwarding",
+          "observed": "No feature in features.json references Host-header forwarding — the fix on branch fix/forward-custom-host-header is excluded from replay scope"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": []
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-CROSS-009",
+      "title": "Strict review may reject or defer a PR or approved v6.9.31 milestone instead of force-replaying it",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Checked handoff notes for evidence of review/rejection",
+          "expected": "Review notes or validator reports showing review was applied",
+          "observed": "Each handoff contains explicit review steps: PR2896 worker reviewed upstream diff and identified local gaps; PR2895 worker compared against dev and found minimal missing delta; PR2923 worker found management upload rebuild gap; PR2914 required two worker sessions (7be1c820 then 9c393af7) — the second fixed gaps found during strict review; auth-backoff worker verified minimal replay; codex worker identified streaming path was missing; healthz worker confirmed local gap before replaying"
+        },
+        {
+          "action": "Verified PR2914 second worker session indicates strict review iteration",
+          "expected": "Evidence that PR2914 was iterated on rather than force-pushed",
+          "observed": "PR2914 had two worker sessions: first created 3094474f, then second (9c393af7) created fixup commit 57d53acc closing ACL replay gaps — demonstrates review identified issues that were addressed before final acceptance"
+        },
+        {
+          "action": "Verified Host-header fix was deferred (not force-replayed)",
+          "expected": "Host-header fix remains out of scope despite being in v6.9.31",
+          "observed": "mission.md explicitly states 'Treat the v6.9.31 Host-header forwarding fix as already satisfied locally; do not replay it' — no replay milestone exists, confirming deferral was applied"
+        },
+        {
+          "action": "Verified no forced acceptance of failing milestones",
+          "expected": "All milestones passed validation before being marked completed",
+          "observed": "validation-state.json shows all assertions status='passed' with no force-completed entries; all milestones have successful handoff notes with exitCode=0 on all verification commands"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "N/A",
+        "files": []
+      },
+      "issues": null
+    }
+  ],
+  "frictions": [],
+  "blockers": [],
+  "summary": "Tested 9 cross-area assertions: all 9 passed. The mission replayed exactly 4 approved PRs (2896, 2895, 2923, 2914) and 3 approved v6.9.31 changes (auth refresh backoff, codex stream output, HEAD /healthz) on local dev. Host-header forwarding was correctly deferred. All work stayed on branch dev, review artifacts remained untracked, each milestone cleared validation gates, the final integrated state is linear and merge-ready, later replays were evaluated against evolving dev, one milestone exists per approved change, and strict review identified gaps (especially in PR2914) that were fixed iteratively."
+}

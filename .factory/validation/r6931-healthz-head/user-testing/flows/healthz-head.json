@@ -1,0 +1,50 @@
+{
+  "groupId": "healthz-head",
+  "testedAt": "2026-04-21T12:56:16-04:00",
+  "isolation": {
+    "workingDirectory": "G:\\Droid.Claude\\CLIProxyAPI",
+    "branch": "dev",
+    "tool": "go test",
+    "noExternalServices": true
+  },
+  "toolsUsed": ["go test"],
+  "assertions": [
+    {
+      "id": "VAL-R6931-HEALTH-001",
+      "title": "HEAD /healthz is supported as a bodyless readiness probe",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Run go test -v -run TestHealthz ./internal/api/ -count=1",
+          "expected": "Both GET and HEAD subtests pass",
+          "observed": "TestHealthz/GET PASS, TestHealthz/HEAD PASS (exit code 0)"
+        },
+        {
+          "action": "Verify HEAD subtest checks status code is 200",
+          "expected": "Assertion rr.Code == http.StatusOK present",
+          "observed": "Line 106-108: if rr.Code != http.StatusOK { t.Fatalf(...) } — confirmed present"
+        },
+        {
+          "action": "Verify HEAD subtest checks empty body",
+          "expected": "Assertion rr.Body.Len() == 0 present",
+          "observed": "Line 109-111: if rr.Body.Len() != 0 { t.Fatalf(\"expected empty body for HEAD request, got %q\", ...) } — confirmed present"
+        },
+        {
+          "action": "Verify GET subtest checks status 200 and JSON body with status=ok",
+          "expected": "GET returns 200 with {\"status\":\"ok\"}",
+          "observed": "GET subtest asserts status 200, parses JSON body, and verifies status field equals \"ok\" — confirmed present"
+        }
+      ],
+      "evidence": {
+        "testOutput": "r6931-healthz-head/healthz-head/TestHealthz-output.txt",
+        "testSource": "r6931-healthz-head/healthz-head/TestHealthz-source.go",
+        "consoleErrors": "none",
+        "network": "in-process httptest — no real network calls"
+      },
+      "issues": null
+    }
+  ],
+  "frictions": [],
+  "blockers": [],
+  "summary": "Tested 1 assertion: 1 passed. TestHealthz/GET returns 200 with {\"status\":\"ok\"}, TestHealthz/HEAD returns 200 with empty body — both subtests pass."
+}
