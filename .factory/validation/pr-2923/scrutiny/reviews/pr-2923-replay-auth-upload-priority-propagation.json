@@ -1,0 +1,44 @@
+{
+  "featureId": "pr-2923-replay-auth-upload-priority-propagation",
+  "reviewedAt": "2026-04-21T02:20:00Z",
+  "commitId": "761ddf08",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation correctly routes management auth uploads through the shared watcher synthesizer pipeline so that runtime fields (priority, prefix, proxy_url, disabled, note, custom headers) are populated immediately upon upload, without waiting for a watcher reload. The fallback to legacy construction when synthesis fails is sound. The test file provides thorough coverage of all six validation assertions with well-structured test helpers covering both upload entry points.",
+    "issues": [
+      {
+        "file": "internal/api/handlers/management/auth_files.go",
+        "line": 1022,
+        "severity": "non_blocking",
+        "description": "The synthesizer.SynthesisContext is created with `Now: time.Now()` which may produce a slightly different timestamp than the fallback path's `time.Now()` calls. This is a cosmetic concern since the synthesizer is always preferred when h.cfg is available, and the test for re-upload correctly verifies timestamp preservation through the existing-auth merge logic."
+      },
+      {
+        "file": "internal/api/handlers/management/auth_files_upload_test.go",
+        "line": 270,
+        "severity": "non_blocking",
+        "description": "The `TestUploadAuthFile_PriorityAffectsSelectionImmediately` test seeds a manually-constructed baseline auth rather than uploading it through the synthesizer. This means the baseline has no Prefix, ProxyURL, or other synthesized fields. While this doesn't affect the priority assertion (which is the test's purpose), a more realistic baseline would be constructed via the same upload path to eliminate any risk of the test passing due to a difference in construction rather than priority semantics. The test is still valid because `authPriority()` only reads `Attributes[\"priority\"]` and both the manually-seeded and synthesized auths set that field."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The pr-replay-worker skill references a `file-group-reviewer` subagent for the adversarial review step, but this subagent is not available in the current environment. The worker correctly fell back to a manual adversarial review and documented the deviation in skillFeedback.deviations. The skill should document a concrete fallback procedure for environments that lack this subagent.",
+      "evidence": "Handoff skillFeedback.deviations[1] records the substitution. The worker's transcript shows it invoked the review skill directly but could not spawn the referenced subagent."
+    },
+    {
+      "area": "skills",
+      "observation": "The pr-replay-worker skill's step 1.2 tells workers to run `.factory/init.sh`, but on Windows PowerShell the shell script is not directly executable. The skill mentions this Windows caveat but the worker still had to manually translate to `go mod download`. The skill could provide explicit Windows-equivalent commands.",
+      "evidence": "Handoff skillFeedback.deviations[0] records the substitution. The `.factory/init.sh` file contains only `go mod download`, so the fallback was correct."
+    },
+    {
+      "area": "conventions",
+      "observation": "The management handler test helpers (`newUploadTestHandler`, `uploadAuthFile`, `mustGetUploadedAuth`) establish a reusable pattern for constructing handler+manager test pairs with environment setup. This pattern is consistent with existing test helpers in the same package (e.g., `test_store_test.go`). No gap — the pattern is well-established.",
+      "evidence": "auth_files_upload_test.go:262-317 and existing test helpers in auth_files_batch_test.go and auth_files_patch_fields_test.go use the same constructor approach."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "The replay correctly adds runtime field propagation to the management auth upload path by routing through the shared synthesizer pipeline. The diff stays within the auth-upload synthesis slice (2 files: 1 production, 1 test). All six validation assertions are covered by four well-targeted regression tests that verify immediate field propagation, upload-path parity, selector-visible priority effects, and re-upload timestamp preservation. Full test suite and compile verification both pass. No blocking issues found."
+}
