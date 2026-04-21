@@ -13,12 +13,14 @@ import (
 // Context encapsulates the dependencies exposed to routing modules during
 // registration. Modules can use the Gin engine to attach routes, the shared
 // BaseAPIHandler for constructing SDK-specific handlers, and the resolved
-// authentication middleware for protecting routes that require API keys.
+// authentication and model-ACL middleware for protecting routes that require
+// API keys.
 type Context struct {
-	Engine         *gin.Engine
-	BaseHandler    *handlers.BaseAPIHandler
-	Config         *config.Config
-	AuthMiddleware gin.HandlerFunc
+	Engine             *gin.Engine
+	BaseHandler        *handlers.BaseAPIHandler
+	Config             *config.Config
+	AuthMiddleware     gin.HandlerFunc
+	ModelACLMiddleware gin.HandlerFunc
 }
 
 // RouteModule represents a pluggable routing module that can register routes

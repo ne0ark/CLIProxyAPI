@@ -31,8 +31,7 @@ func TestRegisterManagementRoutes(t *testing.T) {
 	proxy, _ := createReverseProxy(mockProxy.URL, NewStaticSecretSource(""))
 	m.setProxy(proxy)
 
-	base := &handlers.BaseAPIHandler{}
-	m.registerManagementRoutes(r, base, nil)
+	m.registerManagementRoutes(r, nil)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -57,9 +56,6 @@ func TestRegisterManagementRoutes(t *testing.T) {
 		{"/auth", http.MethodGet},           // Root-level auth route
 		{"/auth/cli-login", http.MethodGet}, // CLI login flow
 		{"/auth/callback", http.MethodGet},  // OAuth callback
-		// Google v1beta1 bridge should still proxy non-model requests (GET) and allow POST
-		{"/api/provider/google/v1beta1/models", http.MethodGet},
-		{"/api/provider/google/v1beta1/models", http.MethodPost},
 	}
 
 	for _, path := range managementPaths {
@@ -102,7 +98,7 @@ func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
 	}
 
 	m := &AmpModule{authMiddleware_: authMiddleware}
-	m.registerProviderAliases(r, base, authMiddleware)
+	m.registerProviderAliases(r, base, authMiddleware, nil)
 
 	paths := []struct {
 		path   string
@@ -115,6 +111,7 @@ func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
 		{"/api/provider/openai/chat/completions", http.MethodPost},
 		{"/api/provider/anthropic/v1/messages", http.MethodPost},
 		{"/api/provider/google/v1beta/models", http.MethodGet},
+		{"/api/provider/google/v1beta1/models", http.MethodGet},
 	}
 
 	for _, tc := range paths {
@@ -144,7 +141,7 @@ func TestRegisterProviderAliases_DynamicModelsHandler(t *testing.T) {
 	base := &handlers.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }}
-	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
+	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }, nil)
 
 	providers := []string{"openai", "anthropic", "google", "groq", "cerebras"}
 
@@ -170,7 +167,7 @@ func TestRegisterProviderAliases_V1Routes(t *testing.T) {
 	base := &handlers.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }}
-	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
+	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }, nil)
 
 	v1Paths := []struct {
 		path   string
@@ -203,7 +200,7 @@ func TestRegisterProviderAliases_V1BetaRoutes(t *testing.T) {
 	base := &handlers.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }}
-	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
+	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }, nil)
 
 	v1betaPaths := []struct {
 		path   string
@@ -211,6 +208,8 @@ func TestRegisterProviderAliases_V1BetaRoutes(t *testing.T) {
 	}{
 		{"/api/provider/google/v1beta/models", http.MethodGet},
 		{"/api/provider/google/v1beta/models/generateContent", http.MethodPost},
+		{"/api/provider/google/v1beta1/models", http.MethodGet},
+		{"/api/provider/google/v1beta1/publishers/google/models/gemini-2.5-pro:generateContent", http.MethodPost},
 	}
 
 	for _, tc := range v1betaPaths {
@@ -226,6 +225,52 @@ func TestRegisterProviderAliases_V1BetaRoutes(t *testing.T) {
 	}
 }
 
+func TestRegisterProviderAliases_ModelACLAppliesToModelBearingRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	base := &handlers.BaseAPIHandler{}
+
+	authCalls := 0
+	modelACLCalls := 0
+	authMiddleware := func(c *gin.Context) {
+		authCalls++
+		c.Set("apiKey", "sk-test")
+		c.Next()
+	}
+	modelACLMiddleware := func(c *gin.Context) {
+		modelACLCalls++
+		c.AbortWithStatus(http.StatusTeapot)
+	}
+
+	m := &AmpModule{}
+	m.registerProviderAliases(r, base, authMiddleware, modelACLMiddleware)
+
+	paths := []string{
+		"/api/provider/openai/chat/completions",
+		"/api/provider/anthropic/v1/messages",
+		"/api/provider/google/v1beta/models/gemini-2.5-pro:generateContent",
+		"/api/provider/google/v1beta1/publishers/google/models/gemini-2.5-pro:generateContent",
+	}
+
+	for _, path := range paths {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusTeapot {
+			t.Fatalf("expected model ACL to abort %s with 418, got %d", path, w.Code)
+		}
+	}
+
+	if authCalls != len(paths) {
+		t.Fatalf("auth middleware called %d times, want %d", authCalls, len(paths))
+	}
+	if modelACLCalls != len(paths) {
+		t.Fatalf("model ACL middleware called %d times, want %d", modelACLCalls, len(paths))
+	}
+}
+
 func TestRegisterProviderAliases_NoAuthMiddleware(t *testing.T) {
 	// Test that routes still register even if auth middleware is nil (fallback behavior)
 	gin.SetMode(gin.TestMode)
@@ -234,7 +279,7 @@ func TestRegisterProviderAliases_NoAuthMiddleware(t *testing.T) {
 	base := &handlers.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: nil} // No auth middleware
-	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
+	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/provider/openai/models", nil)
 	w := httptest.NewRecorder()

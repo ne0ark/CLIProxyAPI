@@ -24,7 +24,7 @@ func findPolicy(policies []config.APIKeyPolicy, key string) *config.APIKeyPolicy
 
 func TestGetAPIKeys_OmitsPoliciesWhenUnset(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -56,7 +56,7 @@ func TestGetAPIKeys_OmitsPoliciesWhenUnset(t *testing.T) {
 
 func TestGetAPIKeys_IncludesPoliciesWhenPresent(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -86,7 +86,7 @@ func TestGetAPIKeys_IncludesPoliciesWhenPresent(t *testing.T) {
 
 func TestPutAPIKeys_StructuredBodyRebuildsPoliciesAndPersists(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	configPath := writeTestConfigFile(t)
 	h := &Handler{
@@ -135,7 +135,7 @@ func TestPutAPIKeys_StructuredBodyRebuildsPoliciesAndPersists(t *testing.T) {
 
 func TestPutAPIKeys_DuplicateStructuredKeyRejected(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg:            &config.Config{},
@@ -156,7 +156,7 @@ func TestPutAPIKeys_DuplicateStructuredKeyRejected(t *testing.T) {
 
 func TestPatchAPIKeys_RenameViaOldNewMovesPolicy(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -203,7 +203,7 @@ func TestPatchAPIKeys_RenameViaOldNewMovesPolicy(t *testing.T) {
 
 func TestPatchAPIKeys_RenameViaIndexValueMovesPolicy(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -240,7 +240,7 @@ func TestPatchAPIKeys_RenameViaIndexValueMovesPolicy(t *testing.T) {
 
 func TestPatchAPIKeys_RenameWithExistingTargetPolicyKeepsTarget(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -279,7 +279,7 @@ func TestPatchAPIKeys_RenameWithExistingTargetPolicyKeepsTarget(t *testing.T) {
 
 func TestPatchAPIKeys_AppendNewKeyLeavesExistingPolicies(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -317,7 +317,7 @@ func TestPatchAPIKeys_AppendNewKeyLeavesExistingPolicies(t *testing.T) {
 
 func TestDeleteAPIKeys_ByValueRemovesPolicy(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -357,7 +357,7 @@ func TestDeleteAPIKeys_ByValueRemovesPolicy(t *testing.T) {
 
 func TestDeleteAPIKeys_ByIndexRemovesPolicy(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -391,7 +391,7 @@ func TestDeleteAPIKeys_ByIndexRemovesPolicy(t *testing.T) {
 
 func TestDeleteAPIKeys_LastPolicyClearsSlice(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -421,7 +421,7 @@ func TestDeleteAPIKeys_LastPolicyClearsSlice(t *testing.T) {
 
 func TestPatchAPIKeys_RenameViaOldNewRenamesAllDuplicates(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -464,7 +464,7 @@ func TestPatchAPIKeys_RenameViaOldNewRenamesAllDuplicates(t *testing.T) {
 
 func TestPatchAPIKeys_IndexedReplaceLeavesPolicyWhenDuplicateRemains(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -501,7 +501,7 @@ func TestPatchAPIKeys_IndexedReplaceLeavesPolicyWhenDuplicateRemains(t *testing.
 
 func TestDeleteAPIKeys_ByIndexKeepsPolicyWhenDuplicateRemains(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	h := &Handler{
 		cfg: &config.Config{

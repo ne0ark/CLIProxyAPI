@@ -230,7 +230,7 @@ func TestUploadAuthFile_ReuploadPreservesIdentityAndTimestampsWhileUpdatingRunti
 func newUploadTestHandler(t *testing.T) (*Handler, *coreauth.Manager) {
 	t.Helper()
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)

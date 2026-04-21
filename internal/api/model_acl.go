@@ -60,6 +60,11 @@ func ModelACLMiddleware(cfgFn func() *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		if !cfg.IsAPIKeyModelRestricted(apiKey) {
+			c.Next()
+			return
+		}
+
 		model, found, err := extractRequestedModel(c)
 		if err != nil {
 			if errors.Is(err, errBodyTooLarge) {
@@ -108,14 +113,27 @@ func extractRequestedModel(c *gin.Context) (model string, found bool, err error)
 		return "", false, nil
 	}
 
-	if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") {
-		rest := strings.TrimPrefix(c.Request.URL.Path, "/v1beta/models/")
+	if idx := strings.Index(c.Request.URL.Path, "/v1beta/models/"); idx >= 0 {
+		rest := c.Request.URL.Path[idx+len("/v1beta/models/"):]
 		if idx := strings.Index(rest, ":"); idx >= 0 {
 			rest = rest[:idx]
 		}
 		rest = strings.TrimSpace(rest)
 		if rest != "" {
 			return rest, true, nil
+		}
+	}
+
+	if strings.Contains(c.Request.URL.Path, "/v1beta1/") {
+		if idx := strings.Index(c.Request.URL.Path, "/models/"); idx >= 0 {
+			rest := c.Request.URL.Path[idx+len("/models/"):]
+			if idx := strings.Index(rest, ":"); idx >= 0 {
+				rest = rest[:idx]
+			}
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				return rest, true, nil
+			}
 		}
 	}
 

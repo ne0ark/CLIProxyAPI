@@ -17,7 +17,7 @@ import (
 
 func TestDeleteAuthFile_UsesAuthPathFromManager(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	tempDir := t.TempDir()
 	authDir := filepath.Join(tempDir, "auth")
@@ -101,7 +101,7 @@ func TestDeleteAuthFile_UsesAuthPathFromManager(t *testing.T) {
 
 func TestDeleteAuthFile_FallbackToAuthDirPath(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	authDir := t.TempDir()
 	fileName := "fallback-user.json"

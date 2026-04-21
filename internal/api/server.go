@@ -281,10 +281,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Register Amp module using V2 interface with Context
 	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
 	ctx := modules.Context{
-		Engine:         engine,
-		BaseHandler:    s.handlers,
-		Config:         cfg,
-		AuthMiddleware: AuthMiddleware(accessManager),
+		Engine:             engine,
+		BaseHandler:        s.handlers,
+		Config:             cfg,
+		AuthMiddleware:     AuthMiddleware(accessManager),
+		ModelACLMiddleware: ModelACLMiddleware(func() *config.Config { return s.cfg }),
 	}
 	if err := modules.RegisterModule(ctx, s.ampModule); err != nil {
 		log.Errorf("Failed to register Amp module: %v", err)

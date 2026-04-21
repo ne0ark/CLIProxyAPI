@@ -145,7 +145,7 @@ func wrapManagementAuth(auth gin.HandlerFunc, prefixes ...string) gin.HandlerFun
 // These routes proxy through to the Amp control plane for OAuth, user management, etc.
 // Uses dynamic middleware and proxy getter for hot-reload support.
 // The auth middleware validates Authorization header against configured API keys.
-func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *handlers.BaseAPIHandler, auth gin.HandlerFunc) {
+func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, auth gin.HandlerFunc) {
 	ampAPI := engine.Group("/api")
 
 	// Always disable CORS for management routes to prevent browser-based attacks
@@ -228,32 +228,6 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 	engine.Any("/auth", append(rootMiddleware, proxyHandler)...)
 	engine.Any("/auth/*path", append(rootMiddleware, proxyHandler)...)
 
-	// Google v1beta1 passthrough with OAuth fallback
-	// AMP CLI uses non-standard paths like /publishers/google/models/...
-	// We bridge these to our standard Gemini handler to enable local OAuth.
-	// If no local OAuth is available, falls back to ampcode.com proxy.
-	geminiHandlers := gemini.NewGeminiAPIHandler(baseHandler)
-	geminiBridge := createGeminiBridgeHandler(geminiHandlers.GeminiHandler)
-	geminiV1Beta1Fallback := NewFallbackHandlerWithMapper(func() *httputil.ReverseProxy {
-		return m.getProxy()
-	}, m.modelMapper, m.forceModelMappings)
-	geminiV1Beta1Handler := geminiV1Beta1Fallback.WrapHandler(geminiBridge)
-
-	// Route POST model calls through Gemini bridge with FallbackHandler.
-	// FallbackHandler checks provider -> mapping -> proxy fallback automatically.
-	// All other methods (e.g., GET model listing) always proxy to upstream to preserve Amp CLI behavior.
-	ampAPI.Any("/provider/google/v1beta1/*path", func(c *gin.Context) {
-		if c.Request.Method == "POST" {
-			if path := c.Param("path"); strings.Contains(path, "/models/") {
-				// POST with /models/ path -> use Gemini bridge with fallback handler
-				// FallbackHandler will check provider/mapping and proxy if needed
-				geminiV1Beta1Handler(c)
-				return
-			}
-		}
-		// Non-POST or no local provider available -> proxy upstream
-		proxyHandler(c)
-	})
 }
 
 // registerProviderAliases registers /api/provider/{provider}/... routes
@@ -262,7 +236,7 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 //	/api/provider/openai/v1/chat/completions
 //	/api/provider/anthropic/v1/messages
 //	/api/provider/google/v1beta/models
-func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *handlers.BaseAPIHandler, auth gin.HandlerFunc) {
+func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *handlers.BaseAPIHandler, auth gin.HandlerFunc, modelACL gin.HandlerFunc) {
 	// Create handler instances for different providers
 	openaiHandlers := openai.NewOpenAIAPIHandler(baseHandler)
 	geminiHandlers := gemini.NewGeminiAPIHandler(baseHandler)
@@ -275,11 +249,22 @@ func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *han
 	fallbackHandler := NewFallbackHandlerWithMapper(func() *httputil.ReverseProxy {
 		return m.getProxy()
 	}, m.modelMapper, m.forceModelMappings)
+	proxyHandler := func(c *gin.Context) {
+		proxy := m.getProxy()
+		if proxy == nil {
+			c.JSON(503, gin.H{"error": "amp upstream proxy not available"})
+			return
+		}
+		proxy.ServeHTTP(c.Writer, c.Request)
+	}
 
 	// Provider-specific routes under /api/provider/:provider
 	ampProviders := engine.Group("/api/provider")
 	if auth != nil {
 		ampProviders.Use(auth)
+	}
+	if modelACL != nil {
+		ampProviders.Use(modelACL)
 	}
 	// Inject client API key into request context for per-client upstream routing
 	ampProviders.Use(clientAPIKeyMiddleware())
@@ -331,4 +316,21 @@ func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *han
 		v1betaAmp.POST("/models/*action", fallbackHandler.WrapHandler(geminiHandlers.GeminiHandler))
 		v1betaAmp.GET("/models/*action", geminiHandlers.GeminiGetHandler)
 	}
+
+	// Google v1beta1 passthrough with OAuth fallback.
+	// AMP CLI uses non-standard paths like /publishers/google/models/...
+	// We bridge these to our standard Gemini handler to enable local OAuth.
+	// If no local OAuth is available, falls back to ampcode.com proxy.
+	geminiBridge := createGeminiBridgeHandler(geminiHandlers.GeminiHandler)
+	geminiV1Beta1Handler := fallbackHandler.WrapHandler(geminiBridge)
+	googleV1Beta1 := ampProviders.Group("/google/v1beta1")
+	googleV1Beta1.Any("/*path", func(c *gin.Context) {
+		if c.Request.Method == "POST" {
+			if path := c.Param("path"); strings.Contains(path, "/models/") {
+				geminiV1Beta1Handler(c)
+				return
+			}
+		}
+		proxyHandler(c)
+	})
 }

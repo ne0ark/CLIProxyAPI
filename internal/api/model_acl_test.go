@@ -79,6 +79,51 @@ func newACLRouteStackRouter(t *testing.T, cfg *config.Config) *gin.Engine {
 		v1beta.POST("/models/*action", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 	}
 
+	provider := router.Group("/api/provider/:provider")
+	provider.Use(AuthMiddleware(manager))
+	provider.Use(ModelACLMiddleware(cfgFn))
+	{
+		provider.GET("/models", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"data": []string{}}) })
+		provider.POST("/chat/completions", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+		v1Amp := provider.Group("/v1")
+		v1Amp.GET("/models", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"data": []string{}}) })
+		v1Amp.POST("/messages", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+		v1Amp.POST("/messages/count_tokens", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+		v1Amp.POST("/chat/completions", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+		v1betaAmp := provider.Group("/v1beta")
+		v1betaAmp.GET("/models", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"models": []string{}}) })
+		v1betaAmp.POST("/models/*action", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+		provider.POST("/v1beta1/*path", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	}
+
+	return router
+}
+
+func newProviderAliasTestRouter(cfg *config.Config, apiKey string) *gin.Engine {
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		if apiKey != "" {
+			c.Set("apiKey", apiKey)
+		}
+		c.Next()
+	})
+	router.Use(ModelACLMiddleware(func() *config.Config { return cfg }))
+
+	router.POST("/api/provider/openai/chat/completions", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	router.POST("/api/provider/anthropic/v1/messages", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	router.POST("/api/provider/google/v1beta/models/*action", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	router.POST("/api/provider/google/v1beta1/*path", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
 	return router
 }
 
@@ -529,6 +574,31 @@ func TestModelACLMiddleware_OversizedBodyDoesNotDrainRemainder(t *testing.T) {
 	}
 }
 
+func TestModelACLMiddleware_UnrestrictedKeyBypassesInspectionCap(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: []string{"sk-open", "sk-narrow"},
+			APIKeyPolicies: []config.APIKeyPolicy{
+				{Key: "sk-narrow", AllowedModels: []string{"gpt-4o*"}},
+			},
+		},
+	}
+	router := newTestRouter(cfg, "sk-open")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = modelACLMaxBodyBytes + 1
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected unrestricted key to bypass ACL body cap, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestModelACLMiddleware_ListEndpointAlwaysAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -574,6 +644,50 @@ func TestModelACLMiddleware_RouteStackRejectsRestrictedKeysOnV1AndV1Beta(t *test
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("/v1beta route expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestModelACLMiddleware_RouteStackRejectsRestrictedKeysOnProviderAliases(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: []string{"sk-narrow"},
+			APIKeyPolicies: []config.APIKeyPolicy{
+				{Key: "sk-narrow", AllowedModels: []string{"gpt-4o*"}},
+			},
+		},
+	}
+	router := newProviderAliasTestRouter(cfg, "sk-narrow")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/provider/openai/chat/completions", strings.NewReader(`{"model":"claude-3-5-sonnet-20241022"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("/api/provider openai route expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/provider/anthropic/v1/messages", strings.NewReader(`{"model":"claude-3-5-sonnet-20241022"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("/api/provider anthropic route expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/provider/google/v1beta/models/gemini-1.5-pro:generateContent", strings.NewReader(`{}`))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("/api/provider google v1beta route expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/provider/google/v1beta1/publishers/google/models/gemini-1.5-pro:generateContent", strings.NewReader(`{}`))
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("/api/provider google v1beta1 route expected 403, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
