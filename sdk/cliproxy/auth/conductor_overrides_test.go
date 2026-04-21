@@ -233,6 +233,35 @@ func (e *authFallbackExecutor) StreamCalls() []string {
 	return out
 }
 
+func (e *authFallbackExecutor) CountTokenCalls() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.countTokenCalls))
+	copy(out, e.countTokenCalls)
+	return out
+}
+
+type recordingHook struct {
+	NoopHook
+
+	mu      sync.Mutex
+	results []Result
+}
+
+func (h *recordingHook) OnResult(_ context.Context, result Result) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.results = append(h.results, result)
+}
+
+func (h *recordingHook) Results() []Result {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]Result, len(h.results))
+	copy(out, h.results)
+	return out
+}
+
 type retryAfterStatusError struct {
 	status     int
 	message    string
@@ -862,7 +891,8 @@ func TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth(t *testing
 }
 
 func TestManagerExecuteCount_404DoesNotSuspendAuth(t *testing.T) {
-	m := NewManager(nil, nil, nil)
+	hook := &recordingHook{}
+	m := NewManager(nil, nil, hook)
 	executor := &authFallbackExecutor{
 		id: "claude",
 		countTokenErrors: map[string]error{
@@ -890,6 +920,15 @@ func TestManagerExecuteCount_404DoesNotSuspendAuth(t *testing.T) {
 	if errCount == nil {
 		t.Fatal("expected count_tokens 404 error")
 	}
+	if statusCodeFromError(errCount) != http.StatusNotFound {
+		t.Fatalf("count_tokens status = %d, want %d", statusCodeFromError(errCount), http.StatusNotFound)
+	}
+	if got := executor.CountTokenCalls(); len(got) != 1 || got[0] != auth.ID {
+		t.Fatalf("count_tokens calls = %v, want [%q]", got, auth.ID)
+	}
+	if got := hook.Results(); len(got) != 0 {
+		t.Fatalf("expected count_tokens 404 to skip result recording, got %#v", got)
+	}
 
 	updated, ok := m.GetByID(auth.ID)
 	if !ok || updated == nil {
@@ -912,5 +951,98 @@ func TestManagerExecuteCount_404DoesNotSuspendAuth(t *testing.T) {
 	}
 	if string(resp.Payload) != auth.ID {
 		t.Fatalf("execute payload = %q, want %q", string(resp.Payload), auth.ID)
+	}
+	if got := executor.ExecuteCalls(); len(got) != 1 || got[0] != auth.ID {
+		t.Fatalf("execute calls = %v, want [%q]", got, auth.ID)
+	}
+	results := hook.Results()
+	if len(results) != 1 {
+		t.Fatalf("expected only the follow-up execute to record a result, got %#v", results)
+	}
+	if !results[0].Success {
+		t.Fatalf("expected follow-up execute result to be successful, got %#v", results[0])
+	}
+	if results[0].AuthID != auth.ID || results[0].Model != model {
+		t.Fatalf("execute result = %#v, want auth=%q model=%q", results[0], auth.ID, model)
+	}
+}
+
+func TestManagerExecuteCount_Non404StillSuspendsAuthAndRecordsResult(t *testing.T) {
+	hook := &recordingHook{}
+	m := NewManager(nil, nil, hook)
+	executor := &authFallbackExecutor{
+		id: "claude",
+		countTokenErrors: map[string]error{
+			"aa-count-auth": &Error{
+				HTTPStatus: http.StatusInternalServerError,
+				Message:    "boom",
+			},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	model := "cc-glm-5.1"
+	auth := &Auth{ID: "aa-count-auth", Provider: "claude"}
+
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	_, errCount := m.ExecuteCount(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errCount == nil {
+		t.Fatal("expected count_tokens 500 error")
+	}
+	if statusCodeFromError(errCount) != http.StatusInternalServerError {
+		t.Fatalf("count_tokens status = %d, want %d", statusCodeFromError(errCount), http.StatusInternalServerError)
+	}
+	if got := executor.CountTokenCalls(); len(got) != 1 || got[0] != auth.ID {
+		t.Fatalf("count_tokens calls = %v, want [%q]", got, auth.ID)
+	}
+
+	results := hook.Results()
+	if len(results) != 1 {
+		t.Fatalf("expected non-404 count_tokens failure to record exactly one result, got %#v", results)
+	}
+	if results[0].Success {
+		t.Fatalf("expected recorded result to be a failure, got %#v", results[0])
+	}
+	if results[0].AuthID != auth.ID || results[0].Model != model || results[0].Provider != auth.Provider {
+		t.Fatalf("recorded result = %#v, want auth=%q provider=%q model=%q", results[0], auth.ID, auth.Provider, model)
+	}
+	if results[0].Error == nil || results[0].Error.HTTPStatus != http.StatusInternalServerError {
+		t.Fatalf("recorded result error = %#v, want HTTPStatus=%d", results[0].Error, http.StatusInternalServerError)
+	}
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to remain registered")
+	}
+	if updated.NextRetryAfter.IsZero() {
+		t.Fatalf("expected non-404 count_tokens failure to set auth cooldown")
+	}
+	state := updated.ModelStates[model]
+	if state == nil {
+		t.Fatalf("expected model state for %q", model)
+	}
+	if !state.Unavailable {
+		t.Fatalf("expected non-404 count_tokens failure to mark the model unavailable")
+	}
+	if state.NextRetryAfter.IsZero() {
+		t.Fatalf("expected non-404 count_tokens failure to set model cooldown")
+	}
+
+	_, errExec := m.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errExec == nil {
+		t.Fatal("expected follow-up execute to be blocked by the existing cooldown")
+	}
+	if got := executor.ExecuteCalls(); len(got) != 0 {
+		t.Fatalf("expected cooldown to block execute before reaching the executor, got execute calls %v", got)
+	}
+	if got := hook.Results(); len(got) != 1 {
+		t.Fatalf("expected blocked execute to avoid extra recorded results, got %#v", got)
 	}
 }
