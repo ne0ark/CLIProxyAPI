@@ -1,0 +1,19 @@
+{
+  "milestone": "r6931-auth-refresh-backoff",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 2,
+    "passed": 2,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-R6931-AUTH-001",
+    "VAL-R6931-AUTH-002"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [],
+  "previousRound": null
+}
