@@ -1,0 +1,21 @@
+{
+  "featureId": "r6931-codex-stream-output",
+  "reviewedAt": "2026-04-21T16:05:00Z",
+  "commitId": "e78be8f107509a591e6ff4147f7ceb9ad73a6fd9",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation correctly extracts shared helpers (collectCodexOutputItemDone, patchCodexCompletedOutput) from inline code in the non-stream Execute path, then wires them into the ExecuteStream path as well. The single-write buffer approach in patchCodexCompletedOutput replaces the prior repeated sjson.SetRawBytes(\"response.output.-1\", ...) calls, which is both more performant and avoids potential issues with JSON array appends. Tests cover all three critical behaviors: (1) non-stream backfill from output_item.done events, (2) indexed ordering with fallback append and authoritative output preservation, and (3) the streaming path backfill. All targeted tests pass.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "Worker deviated from the review skill's named subagent `file-group-reviewer` and used the `worker` subagent as fallback. The pr-replay-worker SKILL.md already documents this Windows fallback pattern in its 'Windows Compatibility Notes' section, so this is a known and accepted deviation.",
+      "evidence": "Handoff skillFeedback.followedProcedure=false with deviation at step '7. Adversarial review'. SKILL.md line ~30: 'If a named reviewer subagent referenced by a skill is unavailable in this environment, use the available worker subagent as the fallback reviewer.'"
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "PASS. The implementation cleanly addresses both validation assertions: VAL-R6931-CODEX-001 (empty completed output is backfilled from streamed output items) and VAL-R6931-CODEX-002 (backfill preserves index order and does not duplicate authoritative completed output). The refactored helpers are well-scoped, the single-write buffer approach is correct and more performant than the prior repeated SetRawBytes appends, and the three test cases cover non-stream backfill, unit-level ordering/authoritative-preservation, and streaming-path backfill. The change stays within the Codex executor slice as required. No bugs, regressions, or architectural issues found."
+}
