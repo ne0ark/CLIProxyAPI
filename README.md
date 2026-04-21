@@ -69,6 +69,7 @@ VisionCoder is also offering our users a limited-time <a href="https://coder.vis
 - OpenAI Codex multi-account load balancing
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
+- Readiness probes can use both `GET /healthz` and `HEAD /healthz`
 
 ## Getting Started
 
