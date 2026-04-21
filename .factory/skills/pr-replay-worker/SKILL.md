@@ -1,6 +1,6 @@
 ---
 name: pr-replay-worker
-description: Review an approved upstream PR, recreate the accepted delta on local dev, and validate it strictly without pushing.
+description: Review an approved upstream PR or release-tag slice, recreate the accepted delta on local dev, and validate it strictly without pushing.
 ---
 
 # PR Replay Worker
@@ -12,6 +12,7 @@ NOTE: Startup and cleanup are handled by `worker-base`. This skill defines the w
 Use this skill for features that:
 
 - inspect an approved upstream PR from `router-for-me/CLIProxyAPI`
+- or inspect an approved upstream release-tag commit/slice from `router-for-me/CLIProxyAPI`
 - compare it against the current local `dev` branch
 - recreate only the accepted missing delta on local `dev`
 - prove the result with strict targeted tests plus repository validation
@@ -26,14 +27,16 @@ This worker does not push to GitHub. It prepares validated local commits only.
 ## Windows Compatibility Notes
 
 - If `.factory/init.sh` cannot be executed directly in the current Windows shell, run the equivalent PowerShell-safe setup commands manually: `go mod download`.
-- If a named reviewer subagent referenced by a skill is unavailable in this environment, use the available `worker` subagent as the fallback reviewer and note that substitution in the handoff.
+- If the preferred review path is unavailable in this environment, use the available `worker` subagent or a manual adversarial review as the fallback reviewer and note that substitution in the handoff.
 
 ## Work Procedure
 
 1. **Anchor the replay**
    - Confirm you are on local `dev`.
-   - Inspect the upstream PR with `gh pr view` and `gh pr diff`.
-   - Record the upstream PR number, title, target branch, changed files, and any review comments that change the acceptance bar.
+   - Inspect the upstream source using the form that matches the milestone:
+     - PR milestone: use `gh pr view` and `gh pr diff`.
+     - Release-tag / commit milestone: use `gh api "repos/router-for-me/CLIProxyAPI/commits/<sha>"` (or equivalent commit inspection) and compare the changed files plus commit message/body.
+   - Record the upstream PR number or commit SHA, title/summary, target branch or release context, changed files, and any review comments or acceptance notes that change the acceptance bar.
    - Compare upstream intent to the current local `dev` state before editing. If local `dev` already contains equivalent behavior, keep only the missing delta.
 
 2. **Trace the owning subsystem**
@@ -68,7 +71,8 @@ This worker does not push to GitHub. It prepares validated local commits only.
 
 7. **Adversarial review**
    - Invoke `review` on the final local diff or branch delta.
-   - If the review path is unavailable or returns no usable output, perform a manual adversarial review yourself by checking `git diff --cached` against the upstream PR intent, the validation contract, and nearby tests, then record that fallback in the handoff.
+   - If the review path is unavailable or returns no usable output, use the available `worker` subagent as the first fallback reviewer.
+   - If no reviewer subagent path is usable, perform a manual adversarial review yourself by checking `git diff --cached` against the upstream PR or commit intent, the validation contract, and nearby tests, then record that fallback in the handoff.
    - Fix any high-confidence correctness issues surfaced by that review.
    - Re-run targeted tests and any broader validation affected by the fix.
 
@@ -79,7 +83,7 @@ This worker does not push to GitHub. It prepares validated local commits only.
    - Do not push.
 
 9. **Return a detailed handoff**
-   - Include the upstream PR inspected, what behavior already existed on local `dev`, what delta you added, every validation command you ran, and any reasons the local diff intentionally differs from the upstream patch.
+   - Include the upstream PR or commit inspected, what behavior already existed on local `dev`, what delta you added, every validation command you ran, and any reasons the local diff intentionally differs from the upstream patch or release commit.
 
 ## Example Handoff
 
