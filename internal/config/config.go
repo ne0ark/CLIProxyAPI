@@ -650,6 +650,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.MaxRetryCredentials = 0
 	}
 
+	// Sanitize API key policies and default fallback behavior.
+	cfg.SanitizeAPIKeyPolicies()
+
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
 

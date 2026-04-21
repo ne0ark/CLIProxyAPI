@@ -47,6 +47,34 @@ func newTestServer(t *testing.T) *Server {
 	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
+func newConfiguredTestServer(t *testing.T, cfg *proxyconfig.Config) *Server {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+
+	if cfg == nil {
+		t.Fatal("cfg must not be nil")
+	}
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	if cfg.AuthDir == "" {
+		cfg.AuthDir = authDir
+	}
+	cfg.Port = 0
+	cfg.Debug = true
+	cfg.LoggingToFile = false
+	cfg.UsageStatisticsEnabled = false
+
+	authManager := auth.NewManager(nil, nil, nil)
+	accessManager := sdkaccess.NewManager()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	return NewServer(cfg, authManager, accessManager, configPath)
+}
+
 func TestHealthz(t *testing.T) {
 	server := newTestServer(t)
 
@@ -66,6 +94,72 @@ func TestHealthz(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("unexpected response status: got %q want %q", resp.Status, "ok")
+	}
+}
+
+func TestServer_ModelACLRejectsRestrictedKeysOnShippedRoutes(t *testing.T) {
+	server := newConfiguredTestServer(t, &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: []string{"sk-narrow"},
+			APIKeyPolicies: []proxyconfig.APIKeyPolicy{
+				{Key: "sk-narrow", AllowedModels: []string{"gpt-4o*"}},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"claude-3-5-sonnet-20241022"}`))
+	req.Header.Set("Authorization", "Bearer sk-narrow")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("/v1/chat/completions expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-1.5-pro:generateContent", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-narrow")
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("/v1beta/models/*action expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServer_ModelACLDiscoveryAndWebsocketBehavior(t *testing.T) {
+	server := newConfiguredTestServer(t, &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys:             []string{"sk-empty", "sk-anything"},
+			APIKeyDefaultPolicy: proxyconfig.APIKeyDefaultPolicyDenyAll,
+			APIKeyPolicies: []proxyconfig.APIKeyPolicy{
+				{Key: "sk-empty", AllowedModels: nil},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer sk-anything")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/v1/models expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	req.Header.Set("Authorization", "Bearer sk-anything")
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/v1beta/models expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer sk-empty")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("/v1/responses websocket upgrade expected 403, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

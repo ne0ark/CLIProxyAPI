@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -105,17 +106,337 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	h.mu.Lock()
+	keys := append([]string(nil), h.cfg.APIKeys...)
+	policies := cloneManagementAPIKeyPolicies(h.cfg.APIKeyPolicies)
+	h.mu.Unlock()
+
+	if len(policies) == 0 {
+		c.JSON(http.StatusOK, gin.H{"api-keys": keys})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"api-keys":         keys,
+		"api-key-policies": policies,
+	})
+}
+
+// PutAPIKeys accepts either:
+//
+//	["sk-aaa", "sk-bbb"]
+//	{"items": ["sk-aaa", "sk-bbb"]}
+//	[{"key":"sk-aaa","allowedModels":["gpt-4o*"]}, {"key":"sk-bbb"}]
+//	[{"key":"sk-aaa","allowed-models":["gpt-4o*"]}]
+//	[{"key":"sk-aaa","allowed_models":["gpt-4o*"]}]
+//
+// The structured form is unwound into APIKeys (the flat list of accepted bearer
+// values) plus APIKeyPolicies (the per-key model ACL rows).
 func (h *Handler) PutAPIKeys(c *gin.Context) {
-	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = append([]string(nil), v...)
-	}, nil)
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+
+	keys, policies, ok := parseAPIKeysPayload(data)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.APIKeys = append([]string(nil), keys...)
+	h.cfg.SetAPIKeyPolicies(policies)
+	h.persistLocked(c)
 }
+
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	h.patchStringList(c, &h.cfg.APIKeys, func() {})
+	var body struct {
+		Old   *string `json:"old"`
+		New   *string `json:"new"`
+		Index *int    `json:"index"`
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	target := &h.cfg.APIKeys
+	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(*target) {
+		previous := (*target)[*body.Index]
+		(*target)[*body.Index] = *body.Value
+		if !apiKeyValuePresent(*target, previous) {
+			h.renameAPIKeyPolicy(previous, *body.Value)
+		}
+		h.persistLocked(c)
+		return
+	}
+
+	if body.Old != nil && body.New != nil {
+		renamed := false
+		for i := range *target {
+			if (*target)[i] == *body.Old {
+				(*target)[i] = *body.New
+				renamed = true
+			}
+		}
+		if renamed {
+			h.renameAPIKeyPolicy(*body.Old, *body.New)
+		} else {
+			*target = append(*target, *body.New)
+		}
+		h.persistLocked(c)
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{"error": "missing fields"})
 }
+
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	target := &h.cfg.APIKeys
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		_, err := fmt.Sscanf(idxStr, "%d", &idx)
+		if err == nil && idx >= 0 && idx < len(*target) {
+			removed := (*target)[idx]
+			*target = append((*target)[:idx], (*target)[idx+1:]...)
+			if !apiKeyValuePresent(*target, removed) {
+				h.removeAPIKeyPolicy(removed)
+			}
+			h.persistLocked(c)
+			return
+		}
+	}
+
+	if val := strings.TrimSpace(c.Query("value")); val != "" {
+		out := make([]string, 0, len(*target))
+		for _, existing := range *target {
+			if strings.TrimSpace(existing) != val {
+				out = append(out, existing)
+			}
+		}
+		*target = out
+		h.removeAPIKeyPolicy(val)
+		h.persistLocked(c)
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{"error": "missing index or value"})
+}
+
+func parseAPIKeysPayload(data []byte) (keys []string, policies []config.APIKeyPolicy, ok bool) {
+	if plain, err := parseAPIKeysStringArray(data); err == nil {
+		return dedupeKeyList(plain), nil, true
+	}
+
+	if entries, err := parseAPIKeysStructuredArray(data); err == nil {
+		keys, policies, ok := normalizeStructuredAPIKeyEntries(entries)
+		return keys, policies, ok
+	}
+
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, nil, false
+	}
+
+	itemsRaw, exists := wrapper["items"]
+	if !exists {
+		return nil, nil, false
+	}
+
+	if plain, err := parseAPIKeysStringArray(itemsRaw); err == nil {
+		return dedupeKeyList(plain), nil, true
+	}
+
+	entries, err := parseAPIKeysStructuredArray(itemsRaw)
+	if err != nil {
+		return nil, nil, false
+	}
+	return normalizeStructuredAPIKeyEntries(entries)
+}
+
+func parseAPIKeysStringArray(data []byte) ([]string, error) {
+	var values []string
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+type apiKeyPolicyPayloadEntry struct {
+	Key                string   `json:"key"`
+	AllowedModelsCamel []string `json:"allowedModels"`
+	AllowedModelsKebab []string `json:"allowed-models"`
+	AllowedModelsSnake []string `json:"allowed_models"`
+}
+
+func parseAPIKeysStructuredArray(data []byte) ([]apiKeyPolicyPayloadEntry, error) {
+	var entries []apiKeyPolicyPayloadEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func normalizeStructuredAPIKeyEntries(entries []apiKeyPolicyPayloadEntry) (keys []string, policies []config.APIKeyPolicy, ok bool) {
+	if len(entries) == 0 {
+		return nil, nil, true
+	}
+
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		key := strings.TrimSpace(entry.Key)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			return nil, nil, false
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+
+		allowed := entry.AllowedModelsCamel
+		if len(allowed) == 0 {
+			allowed = entry.AllowedModelsKebab
+		}
+		if len(allowed) == 0 {
+			allowed = entry.AllowedModelsSnake
+		}
+		if len(allowed) == 0 {
+			continue
+		}
+
+		normalized := make([]string, 0, len(allowed))
+		seenPatterns := make(map[string]struct{}, len(allowed))
+		for _, pattern := range allowed {
+			trimmed := strings.TrimSpace(pattern)
+			if trimmed == "" {
+				continue
+			}
+			if _, exists := seenPatterns[trimmed]; exists {
+				continue
+			}
+			seenPatterns[trimmed] = struct{}{}
+			normalized = append(normalized, trimmed)
+		}
+		if len(normalized) == 0 {
+			continue
+		}
+
+		policies = append(policies, config.APIKeyPolicy{
+			Key:           key,
+			AllowedModels: normalized,
+		})
+	}
+
+	if len(keys) == 0 {
+		return nil, nil, false
+	}
+	return keys, policies, true
+}
+
+func apiKeyValuePresent(keys []string, value string) bool {
+	for _, key := range keys {
+		if key == value {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeKeyList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (h *Handler) renameAPIKeyPolicy(oldKey, newKey string) {
+	oldKey = strings.TrimSpace(oldKey)
+	newKey = strings.TrimSpace(newKey)
+	if oldKey == "" || newKey == "" || oldKey == newKey || len(h.cfg.APIKeyPolicies) == 0 {
+		return
+	}
+
+	hasNew := false
+	for _, policy := range h.cfg.APIKeyPolicies {
+		if policy.Key == newKey {
+			hasNew = true
+			break
+		}
+	}
+
+	out := make([]config.APIKeyPolicy, 0, len(h.cfg.APIKeyPolicies))
+	for _, policy := range cloneManagementAPIKeyPolicies(h.cfg.APIKeyPolicies) {
+		if policy.Key == oldKey {
+			if hasNew {
+				continue
+			}
+			policy.Key = newKey
+		}
+		out = append(out, policy)
+	}
+	h.cfg.SetAPIKeyPolicies(out)
+}
+
+func (h *Handler) removeAPIKeyPolicy(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" || len(h.cfg.APIKeyPolicies) == 0 {
+		return
+	}
+
+	out := make([]config.APIKeyPolicy, 0, len(h.cfg.APIKeyPolicies))
+	for _, policy := range cloneManagementAPIKeyPolicies(h.cfg.APIKeyPolicies) {
+		if policy.Key == key {
+			continue
+		}
+		out = append(out, policy)
+	}
+	h.cfg.SetAPIKeyPolicies(out)
+}
+
+func cloneManagementAPIKeyPolicies(in []config.APIKeyPolicy) []config.APIKeyPolicy {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := make([]config.APIKeyPolicy, 0, len(in))
+	for _, policy := range in {
+		cloned := config.APIKeyPolicy{Key: policy.Key}
+		if len(policy.AllowedModels) > 0 {
+			cloned.AllowedModels = append([]string(nil), policy.AllowedModels...)
+		}
+		out = append(out, cloned)
+	}
+	return out
 }
 
 // gemini-api-key: []GeminiKey

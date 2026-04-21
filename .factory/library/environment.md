@@ -28,3 +28,8 @@ Environment variables, external dependencies, and setup notes for this mission.
 - Go toolchain is available and validated locally (`go1.26.2 windows/amd64` during dry run).
 - Primary validation commands for this mission are local Go build/test commands plus GitHub PR inspection.
 - No external database, cache, browser automation, or long-running service is required for the approved batch.
+
+## Validation gotchas
+
+- On this Windows host, `go test -race` is currently blocked by environment setup: `CGO_ENABLED=0`, and no usable C compiler (`gcc`, `clang`, `cl.exe`, or `zig`) was available on `PATH` or in common install locations during the PR-2914 replay run.
+- If future work requires race validation, provision a supported C toolchain and rerun with `CGO_ENABLED=1` before treating the race gate as satisfied.
