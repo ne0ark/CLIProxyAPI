@@ -14,10 +14,23 @@ Approved upstream batch and replay guidance for this mission.
 3. `#2923` — `Fix auth upload priority propagation`
 4. `#2914` — `feat(access): per-api-key model allowlist with glob matching (v2, review fixes)`
 
+## Approved release/tag additions
+
+After the PR milestones above:
+
+5. `v6.9.31` auth refresh ineffective-backoff
+6. `v6.9.31` Codex streaming output backfill/perf follow-up
+7. `v6.9.31` `HEAD /healthz`
+
+Evaluated and already satisfied locally:
+
+- `v6.9.31` Host-header forwarding fix
+
 ## Replay order
 
 - Replay and validate in the order above.
 - Each PR gets its own milestone.
+- Each approved `v6.9.31` addition gets its own milestone.
 - Later PR work must be re-reviewed against the evolving local `dev` branch rather than assuming the upstream diff can be copied verbatim.
 
 ## Known local-state caveats
@@ -29,6 +42,8 @@ Approved upstream batch and replay guidance for this mission.
 
 - `#2914` is the broadest change in the batch and touches config, API routing, management handlers, and concurrency-sensitive policy lookup logic.
 - Treat `#2914` as the likeliest PR to require additional replay fixes or expanded regression coverage.
+- `v6.9.31` Codex stream output is the highest-value post-PR release slice.
+- `v6.9.31` auth refresh backoff overlaps `sdk/cliproxy/auth/conductor.go`, so it must be replayed carefully on top of the already sealed PR-2895 milestone.
 
 ## Deferred PRs
 

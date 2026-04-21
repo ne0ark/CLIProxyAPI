@@ -98,6 +98,25 @@ Key invariants for workers to preserve:
 - fail-closed behavior for oversized or unreadable request bodies
 - coherent policy reads after mutation, including concurrency-sensitive paths
 
+### Release `v6.9.31` auth refresh ineffective-backoff
+
+- Main area: `sdk/cliproxy/auth/conductor.go`
+
+This slice lives in the auth refresh scheduler. Its invariant is that a technically successful refresh that still leaves the auth immediately eligible for another refresh should be throttled by a future retry point instead of causing a tight refresh loop.
+
+### Release `v6.9.31` Codex stream output backfill
+
+- Main area: `internal/runtime/executor/codex_executor.go`
+- Validation area: `internal/runtime/executor/codex_executor_stream_output_test.go`
+
+This slice lives in the Codex stream executor. The key invariant is that when the completed response omits final output items, the executor reconstructs them from streamed `response.output_item.done` events in order, without duplicating authoritative completed output.
+
+### Release `v6.9.31` HEAD `/healthz`
+
+- Main area: `internal/api/server.go`
+
+This slice lives in server route wiring. The invariant is simple: readiness checks must accept both `GET /healthz` and bodyless `HEAD /healthz` without changing existing health semantics.
+
 ## Cross-cutting invariants
 
 ### Branch and replay invariants

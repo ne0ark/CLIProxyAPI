@@ -31,5 +31,10 @@ Environment variables, external dependencies, and setup notes for this mission.
 
 ## Validation gotchas
 
-- On this Windows host, `go test -race` is currently blocked by environment setup: `CGO_ENABLED=0`, and no usable C compiler (`gcc`, `clang`, `cl.exe`, or `zig`) was available on `PATH` or in common install locations during the PR-2914 replay run.
-- If future work requires race validation, provision a supported C toolchain and rerun with `CGO_ENABLED=1` before treating the race gate as satisfied.
+- On this Windows host, the working compiler path for race validation is:
+  - `C:\Users\Janak Kalaria\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260407-ucrt-x86_64\bin`
+- That compiler is not on `PATH` by default for this shell, so race runs must prepend that bin directory to `PATH` and set:
+  - `CGO_ENABLED=1`
+  - `CC=gcc`
+- The first successful PR-2914 race launch no longer failed on environment setup; it surfaced real race failures in tests under `internal/api/handlers/management`, notably concurrent `gin.SetMode` writes.
+- Treat the race gate as actionable code/test work now, not as an external environment blocker.
