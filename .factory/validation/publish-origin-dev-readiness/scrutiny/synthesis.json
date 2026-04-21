@@ -1,0 +1,33 @@
+{
+  "milestone": "publish-origin-dev-readiness",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "format": { "passed": true, "command": "gofmt -w ./cmd ./internal ./sdk ./test", "exitCode": 0 },
+    "test": { "passed": true, "command": "go test -count=1 -p 16 ./...", "exitCode": 0 },
+    "typecheck": { "passed": true, "command": "go build -o test-output.exe ./cmd/server", "exitCode": 0 },
+    "lint": { "passed": true, "command": "golangci-lint run --config .golangci.yml", "exitCode": 0 }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Added Windows pre-commit fallback note to environment.md: use python3 -m pre_commit when the pre-commit launcher is not on PATH.",
+      "sourceFeature": "publish-origin-dev-readiness"
+    },
+    {
+      "target": "library",
+      "description": "Documented non-copyable SDKConfig pattern in architecture.md: SDKConfig contains atomic.Pointer field, workers must not copy by value.",
+      "sourceFeature": "publish-origin-dev-readiness"
+    }
+  ],
+  "suggestedGuidanceUpdates": [],
+  "rejectedObservations": [],
+  "previousRound": null
+}

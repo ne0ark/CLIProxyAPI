@@ -119,6 +119,14 @@ This slice lives in the Codex stream executor. The key invariant is that when th
 
 This slice lives in server route wiring. The invariant is simple: readiness checks must accept both `GET /healthz` and bodyless `HEAD /healthz` without changing existing health semantics.
 
+## Non-copyable SDKConfig
+
+`internal/config/sdk_config.go` contains `SDKConfig` which now has a `policyIndex atomic.Pointer[map[string]APIKeyPolicy]` field. This makes `SDKConfig` non-copyable by value — any attempt to copy it will trigger `govet copylocks` failures.
+
+Workers who need to pass `SDKConfig` data downstream should either:
+- Construct a minimal `SDKConfig{ProxyURL: ...}` with only the fields the downstream code actually consumes (the proxy-override constructors take this approach), or
+- Pass a pointer `*SDKConfig` instead of copying by value.
+
 ## Cross-cutting invariants
 
 ### Branch and replay invariants

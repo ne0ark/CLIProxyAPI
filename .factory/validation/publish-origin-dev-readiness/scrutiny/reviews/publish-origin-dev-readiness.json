@@ -1,0 +1,26 @@
+{
+  "featureId": "publish-origin-dev-readiness",
+  "reviewedAt": "2026-04-21T18:15:00Z",
+  "commitId": "172061b86fa3cdcbe93416949541c9d93bfd2041",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The commit cleanly resolves two pre-push publication blockers: (1) govet copylocks warnings caused by copying SDKConfig (which contains an atomic.Pointer field) in three auth proxy-override constructors, and (2) the unused linter flagging three dead management string-list helpers. The fixes are minimal and behavior-preserving.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "services",
+      "observation": "The publish-readiness worker used `python3 -m pre_commit` as a Windows fallback because the `pre-commit` launcher was not on PATH. The services.yaml `prepush` command still lists `pre-commit run --hook-stage pre-push --all-files` which may fail on this Windows host if the launcher is not available.",
+      "evidence": "Handoff verification commands show `python3 -m pre_commit run --hook-stage pre-push --all-files` (exitCode 0). The skillFeedback.suggestedChanges also notes: \"Mention `python3 -m pre_commit` as the Windows fallback when the `pre-commit` launcher is not on PATH.\""
+    },
+    {
+      "area": "conventions",
+      "observation": "SDKConfig now contains a non-copyable `atomic.Pointer` field (policyIndex). This is not documented in AGENTS.md or .factory/library/. Future workers who copy SDKConfig by value will hit govet copylocks failures.",
+      "evidence": "internal/config/sdk_config.go:42 — `policyIndex atomic.Pointer[map[string]APIKeyPolicy]`. The three auth constructors were the only call sites that copied SDKConfig by value; all are now fixed in this commit."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "PASS. The commit correctly resolves both publication blockers. The auth constructor changes (anthropic_auth.go, openai_auth.go, kimi.go) replace full SDKConfig value copies with constructing a minimal SDKConfig{ProxyURL: effectiveProxyURL}, which is the only field consumed by the downstream proxy setup functions (util.SetProxy reads only ProxyURL, NewAnthropicHttpClient/newUtlsRoundTripper reads only ProxyURL). The three dead management helpers (putStringList, patchStringList, deleteFromStringList) in config_lists.go are cleanly removed — they had no remaining callers after the ACL replay replaced the generic string-list endpoints with API-key-aware implementations. The diff touches exactly the four cited files, no tests were needed beyond existing proxy-override coverage, and all verification gates (lint, pre-push, build, full test suite) passed."
+}

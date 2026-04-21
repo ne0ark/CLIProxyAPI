@@ -38,3 +38,9 @@ Environment variables, external dependencies, and setup notes for this mission.
   - `CC=gcc`
 - The first successful PR-2914 race launch no longer failed on environment setup; it surfaced real race failures in tests under `internal/api/handlers/management`, notably concurrent `gin.SetMode` writes.
 - Treat the race gate as actionable code/test work now, not as an external environment blocker.
+
+## Windows pre-commit fallback
+
+- The `pre-commit` CLI launcher may not be on `PATH` on this Windows host.
+- If `pre-commit run ...` fails with "command not found", use `python3 -m pre_commit run ...` as the fallback.
+- The `services.yaml` `prepush` command uses the standard `pre-commit` invocation; workers should use the `python3 -m pre_commit` form only when the direct launcher is unavailable.
