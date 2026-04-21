@@ -44,14 +44,12 @@ func NewCodexAuth(cfg *config.Config) *CodexAuth {
 // proxyURL takes precedence over cfg.ProxyURL when non-empty.
 func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
 	effectiveProxyURL := strings.TrimSpace(proxyURL)
-	var sdkCfg config.SDKConfig
 	if cfg != nil {
-		sdkCfg = cfg.SDKConfig
 		if effectiveProxyURL == "" {
 			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
 		}
 	}
-	sdkCfg.ProxyURL = effectiveProxyURL
+	sdkCfg := config.SDKConfig{ProxyURL: effectiveProxyURL}
 	return &CodexAuth{
 		httpClient: util.SetProxy(&sdkCfg, &http.Client{}),
 	}

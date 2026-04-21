@@ -110,14 +110,12 @@ func NewDeviceFlowClientWithDeviceID(cfg *config.Config, deviceID string) *Devic
 func NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg *config.Config, deviceID string, proxyURL string) *DeviceFlowClient {
 	client := &http.Client{Timeout: 30 * time.Second}
 	effectiveProxyURL := strings.TrimSpace(proxyURL)
-	var sdkCfg config.SDKConfig
 	if cfg != nil {
-		sdkCfg = cfg.SDKConfig
 		if effectiveProxyURL == "" {
 			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
 		}
 	}
-	sdkCfg.ProxyURL = effectiveProxyURL
+	sdkCfg := config.SDKConfig{ProxyURL: effectiveProxyURL}
 	client = util.SetProxy(&sdkCfg, client)
 
 	resolvedDeviceID := strings.TrimSpace(deviceID)
