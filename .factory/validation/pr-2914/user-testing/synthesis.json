@@ -1,0 +1,33 @@
+{
+  "milestone": "pr-2914",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-PR2914-001",
+    "VAL-PR2914-002",
+    "VAL-PR2914-003",
+    "VAL-PR2914-004",
+    "VAL-PR2914-005",
+    "VAL-PR2914-006",
+    "VAL-PR2914-007",
+    "VAL-PR2914-008",
+    "VAL-PR2914-009",
+    "VAL-PR2914-010",
+    "VAL-PR2914-011",
+    "VAL-PR2914-012",
+    "VAL-PR2914-013",
+    "VAL-PR2914-014",
+    "VAL-PR2914-015",
+    "VAL-PR2914-016"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [],
+  "previousRound": null
+}

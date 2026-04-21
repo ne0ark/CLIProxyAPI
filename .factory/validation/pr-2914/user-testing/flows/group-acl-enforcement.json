@@ -1,0 +1,50 @@
+{
+  "groupId": "group-acl-enforcement",
+  "assertions": [
+    "VAL-PR2914-001",
+    "VAL-PR2914-002",
+    "VAL-PR2914-003",
+    "VAL-PR2914-004",
+    "VAL-PR2914-005",
+    "VAL-PR2914-006",
+    "VAL-PR2914-007",
+    "VAL-PR2914-008"
+  ],
+  "results": {
+    "VAL-PR2914-001": {
+      "status": "pass",
+      "evidence": "Upstream PR #2914 files: internal/api/handlers/management/{api_keys_payload_test.go,config_lists.go,config_lists_api_keys_policy_test.go}, internal/api/{model_acl.go,model_acl_test.go,server.go}, internal/config/{sdk_config.go,sdk_config_cache_test.go,sdk_config_test.go}. Local diff includes these exact files plus directly related management and test infrastructure files (gin_test_mode_test.go, auth_files.go changes for upload path, auth_files_upload_test.go for priority propagation). Scope is confined to ACL/config/management slice."
+    },
+    "VAL-PR2914-002": {
+      "status": "pass",
+      "evidence": "TestParseAPIKeysPayload subtests pass: plain_string_array, plain_string_array_dedupes_and_trims, wrapped_items_array, empty_plain_array_clears_keys, empty_wrapped_array_clears_keys. Legacy list payload formats are accepted, trimmed and deduplicated without requiring policy metadata."
+    },
+    "VAL-PR2914-003": {
+      "status": "pass",
+      "evidence": "TestParseAPIKeysPayload subtests pass: structured_array_camelCase, structured_array_snake_case, structured_array_kebab-case, structured_wrapped_items, structured_entry_without_key_fails, duplicate_structured_key_fails. TestPutAPIKeys_StructuredBodyRebuildsPoliciesAndPersists passes. Structured entries with allowed-model field aliases are stored with flattened key list and persisted per-key model policies."
+    },
+    "VAL-PR2914-004": {
+      "status": "pass",
+      "evidence": "TestGetAPIKeys_IncludesPoliciesWhenPresent and TestGetAPIKeys_OmitsPoliciesWhenUnset both pass. GET /v0/management/api-keys includes per-key policy payloads when policies exist and omits that field when no policies are configured."
+    },
+    "VAL-PR2914-005": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_RouteStackRejectsRestrictedKeysOnV1AndV1Beta passes. The same per-key model restriction is enforced on both OpenAI-style /v1 routes and Gemini-style /v1beta model-bearing routes, with unrestricted keys still following configured default behavior (TestModelACLMiddleware_NoPoliciesAllowsAllByDefault passes)."
+    },
+    "VAL-PR2914-006": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_AllowedModelPasses and TestModelACLMiddleware_DisallowedModelRejected pass. For JSON model-bearing routes, a key with an allowlist succeeds only for matching models and receives 403 model_not_allowed_for_key for non-matching models."
+    },
+    "VAL-PR2914-007": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_DenyAllDefaultRejectsUnknownKey, TestModelACLMiddleware_ExplicitEmptyPolicyUsesDenyAllDefault, and TestIsModelAllowedForKey subtests (matching_key_with_empty_allowed_list_and_deny-all_default_rejects, no_policies_deny-all_default_rejects_any_model) all pass. deny-all fallback rejects requests without matching grant, and explicit empty allowlists follow deny-all fallback."
+    },
+    "VAL-PR2914-008": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_GeminiPathExtraction and TestModelACLMiddleware_GeminiPathPreservesPrefix pass. TestIsModelAllowedForKey subtests (prefix-stripped_model_matches_glob, policy_authored_against_the_prefixed_form_still_matches) pass. ACL checks for Gemini-style /v1beta/models/... use full model identifier before action suffix, while allowlist matching tolerates stripped leading prefix."
+    }
+  },
+  "toolsUsed": ["go test", "gh pr view", "git diff"],
+  "frictions": [],
+  "blockers": []
+}

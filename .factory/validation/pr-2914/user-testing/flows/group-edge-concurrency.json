@@ -1,0 +1,50 @@
+{
+  "groupId": "group-edge-concurrency",
+  "assertions": [
+    "VAL-PR2914-009",
+    "VAL-PR2914-010",
+    "VAL-PR2914-011",
+    "VAL-PR2914-012",
+    "VAL-PR2914-013",
+    "VAL-PR2914-014",
+    "VAL-PR2914-015",
+    "VAL-PR2914-016"
+  ],
+  "results": {
+    "VAL-PR2914-009": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_ModelAfterPeekFallsBackCorrectly and TestModelACLMiddleware_UnrestrictedKeyBypassesInspectionCap pass. Model extraction from request body preserves the original body for downstream handlers. Both peek-first and fallback extraction paths preserve byte-for-byte body content."
+    },
+    "VAL-PR2914-010": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_OversizedBodyRejectedWith413, TestModelACLMiddleware_OversizedBodyRejectedViaContentLength, TestModelACLMiddleware_OversizedBodyDoesNotDrainRemainder, and TestModelACLMiddleware_ReadErrorFailsClosed all pass. Requests exceeding the ACL inspection cap are rejected with HTTP 413 (by content length or streamed size), and read failures return 400 instead of bypassing enforcement."
+    },
+    "VAL-PR2914-011": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_RouteStackDiscoveryRoutesRemainAccessible and TestModelACLMiddleware_ListEndpointAlwaysAllowed pass. Endpoints that do not carry a target model remain accessible and are not rejected solely because a key has an allowlist configured."
+    },
+    "VAL-PR2914-012": {
+      "status": "pass",
+      "evidence": "TestModelACLMiddleware_WebsocketUpgradeRejectedForRestrictedKey, TestModelACLMiddleware_WebsocketUpgradeAllowedForUnrestrictedKey, and TestModelACLMiddleware_WebsocketUpgradeRejectedForExplicitEmptyPolicyUnderDenyAll all pass. WebSocket upgrades are rejected for restricted keys, allowed for unrestricted keys, and denied under deny-all fallback when no matching policy authorizes the key."
+    },
+    "VAL-PR2914-013": {
+      "status": "pass",
+      "evidence": "TestPatchAPIKeys_RenameViaOldNewMovesPolicy, TestPatchAPIKeys_RenameViaIndexValueMovesPolicy, TestPatchAPIKeys_IndexedReplaceLeavesPolicyWhenDuplicateRemains, TestPatchAPIKeys_RenameWithExistingTargetPolicyKeepsTarget, TestDeleteAPIKeys_ByValueRemovesPolicy, TestDeleteAPIKeys_ByIndexRemovesPolicy, TestDeleteAPIKeys_LastPolicyClearsSlice all pass. Rename, rotation, and delete operations carry policies forward correctly; collision handling preserves the correct surviving policy; deleting the last live key clears the policy row."
+    },
+    "VAL-PR2914-014": {
+      "status": "pass",
+      "evidence": "TestPatchAPIKeys_RenameViaOldNewRenamesAllDuplicates, TestDeleteAPIKeys_ByIndexKeepsPolicyWhenDuplicateRemains, TestParseAPIKeysPayload/duplicate_structured_key_fails pass. Duplicate key handling does not broaden access; rename, replace, and delete operations maintain correct allowlist state for surviving duplicates."
+    },
+    "VAL-PR2914-015": {
+      "status": "pass",
+      "evidence": "TestIsModelAllowedForKey subtests pass (exact_model_match_wins, non-matching_exact_model_rejects_when_policy_is_non-empty, glob_star_matches_family, glob_does_not_match_unrelated_family). TestPolicyCache_ConcurrentReadsAreSafe passes. Policy lookup reflects current state immediately after mutation; caller-side slice mutation does not broaden access."
+    },
+    "VAL-PR2914-016": {
+      "status": "pass",
+      "evidence": "go test -race -count=1 ./internal/api ./internal/api/handlers/management ./internal/config passes with exit code 0 and no race detector output. TestModelACLMiddleware_ConcurrentManagementMutationsAndReads exercises concurrent policy mutation and ACL reads across internal/api, internal/api/handlers/management, and internal/config. All race-free."
+    }
+  },
+  "toolsUsed": ["go test", "go test -race"],
+  "frictions": [],
+  "blockers": []
+}
