@@ -1,0 +1,26 @@
+{
+  "featureId": "pr-2895-replay-count-tokens-404-cooldown-fix",
+  "reviewedAt": "2026-04-21T01:31:00Z",
+  "commitId": "ac2e1cfcab05c2ceba2ca7159b47453fd3fb3593",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation adds focused regression coverage to conductor_overrides_test.go proving that count_tokens 404s skip MarkResult (no auth suspension, no cooldown state, no result recording) while preserving full cooldown/result-recording behavior for non-404 count_tokens failures. The diff is confined to a single test file in the auth conductor slice. All validation assertions VAL-PR2895-001 through VAL-PR2895-007 are covered by the two test functions and their detailed assertions.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The pr-replay-worker skill's step 1.2 runs `.factory/init.sh` which is a POSIX shell script. On Windows PowerShell, the worker substituted `go mod download` directly. The skill should document a Windows-safe equivalent or note the allowed substitution.",
+      "evidence": "Handoff skillFeedback.deviations notes the worker ran `go mod download` instead of `.factory/init.sh` because the init script is POSIX-only."
+    },
+    {
+      "area": "skills",
+      "observation": "The pr-replay-worker skill's step 7 (adversarial review) expects the review skill to spawn a subagent pipeline, but on Windows the fallback reviewer returned no output and the worker completed the review manually. The skill should have an explicit manual-review fallback path.",
+      "evidence": "Handoff skillFeedback.deviations notes the review skill's fallback reviewer task exited without producing findings, requiring manual diff review."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Pass. The commit ac2e1cfc adds 133 lines to sdk/cliproxy/auth/conductor_overrides_test.go, introducing a CountTokenCalls() accessor on authFallbackExecutor, a thread-safe recordingHook struct for result-tracking assertions, and two comprehensive test functions. TestManagerExecuteCount_404DoesNotSuspendAuth now additionally verifies status code, count_tokens call count, zero result recording for the 404 case, execute call count after follow-up, and the follow-up execute result's success/auth/model fields. TestManagerExecuteCount_Non404StillSuspendsAuthAndRecordsResult proves that a 500 error records exactly one failure result with correct auth/provider/model/error fields, sets both auth-level and model-level cooldown, marks the model unavailable, and blocks a subsequent Execute from reaching the executor. The diff scope is correctly bounded to the auth conductor test slice. All seven VAL-PR2895 assertions are satisfied by the test coverage."
+}

@@ -1,0 +1,34 @@
+{
+  "milestone": "pr-2895",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "build": { "passed": true, "command": "go build -o test-output.exe ./cmd/server", "exitCode": 0 },
+    "format": { "passed": true, "command": "gofmt -w ./cmd ./internal ./sdk ./test", "exitCode": 0 },
+    "test": { "passed": true, "command": "go test -count=1 -p 16 ./...", "exitCode": 0 }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skills (pr-replay-worker)",
+      "suggestion": "Document a Windows-safe equivalent for step 1.2 (.factory/init.sh) or note the allowed substitution of `go mod download` on non-POSIX platforms.",
+      "evidence": "pr-2895-replay worker handoff skillFeedback.deviations notes init.sh is POSIX-only; worker substituted go mod download directly.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills (pr-replay-worker)",
+      "suggestion": "Add an explicit manual-review fallback path for step 7 (adversarial review) when the review subagent pipeline produces no output.",
+      "evidence": "pr-2895-replay worker handoff skillFeedback.deviations notes review skill fallback reviewer returned no output, requiring manual diff review.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}
