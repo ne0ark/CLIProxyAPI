@@ -24,3 +24,18 @@ and can run concurrently without interference.
 - `go test -count=1 -p 16 ./...` for full suite
 - `go build -o test-output.exe ./cmd/server` for compile verification
 - `gh pr view` and `git diff` for scope checks
+
+## Flow Validator Guidance: final publication
+
+The final publication milestone adds a git/publication validation surface after all replay milestones are complete.
+
+### Isolation rules
+- Run this surface with concurrency **1**.
+- Only the final publication validator may perform the actual `git push origin dev`.
+- Before push, validate locally with lint plus the pre-push hook equivalent so publish-time failures are surfaced early.
+
+### Tools
+- `golangci-lint run --config .golangci.yml`
+- `pre-commit run --hook-stage pre-push --all-files`
+- `git push origin dev`
+- `git status --porcelain`

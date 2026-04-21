@@ -1,6 +1,8 @@
 commands:
   install: go mod download
   format: gofmt -w ./cmd ./internal ./sdk ./test
+  lint: golangci-lint run --config .golangci.yml
+  prepush: pre-commit run --hook-stage pre-push --all-files
   test: go test -count=1 -p 16 ./...
   build: go build -o test-output.exe ./cmd/server; if (Test-Path test-output.exe) { Remove-Item test-output.exe }
   compilecheck: go build -o test-output.exe ./cmd/server; if (Test-Path test-output.exe) { Remove-Item test-output.exe }
