@@ -1,0 +1,52 @@
+{
+  "groupId": "go-test-group",
+  "milestone": "pr-2895",
+  "assertions": [
+    "VAL-PR2895-001",
+    "VAL-PR2895-002",
+    "VAL-PR2895-003",
+    "VAL-PR2895-004",
+    "VAL-PR2895-005",
+    "VAL-PR2895-006",
+    "VAL-PR2895-007"
+  ],
+  "results": {
+    "VAL-PR2895-001": {
+      "status": "pass",
+      "evidence": "git show --stat ac2e1cfc shows only conductor_overrides_test.go changed; git show --stat 0d35e6ae shows only conductor.go and conductor_overrides_test.go changed. Scope limited to auth conductor slice."
+    },
+    "VAL-PR2895-002": {
+      "status": "pass",
+      "evidence": "TestManagerExecuteCount_404DoesNotSuspendAuth PASS: single-auth count_tokens 404 returns error without blacking out auth, no cooldown set, no model state cooldown, and no result recorded."
+    },
+    "VAL-PR2895-003": {
+      "status": "pass",
+      "evidence": "TestManagerExecuteCount_404DoesNotSuspendAuth PASS: post-404 m.Execute succeeds with the same auth, executor called, result recorded as successful."
+    },
+    "VAL-PR2895-004": {
+      "status": "pass",
+      "evidence": "TestManager_MarkResult_RequestScopedNotFoundDoesNotCooldownAuth and TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth both PASS: request-scoped 404 on normal execute path stops retrying without blacking out auth."
+    },
+    "VAL-PR2895-005": {
+      "status": "pass",
+      "evidence": "TestManagerExecuteCount_404DoesNotSuspendAuth PASS (404 exempted) + TestManagerExecuteCount_Non404StillSuspendsAuthAndRecordsResult PASS (non-404 still triggers cooldown): exemption isolated to count_tokens 404 branch only."
+    },
+    "VAL-PR2895-006": {
+      "status": "pass",
+      "evidence": "TestManagerExecuteCount_Non404StillSuspendsAuthAndRecordsResult PASS: non-404 count_tokens failure sets auth cooldown, marks model unavailable, and follow-up execute is blocked."
+    },
+    "VAL-PR2895-007": {
+      "status": "pass",
+      "evidence": "TestManagerExecuteCount_Non404StillSuspendsAuthAndRecordsResult PASS: non-404 count_tokens failure records exactly one result with correct auth/provider/model/error fields. recordingHook captures the result."
+    }
+  },
+  "toolsUsed": [
+    "go test -count=1 -v ./sdk/cliproxy/auth/...",
+    "go build -o test-output.exe ./cmd/server",
+    "go test -count=1 -p 16 ./...",
+    "git show --stat",
+    "git log"
+  ],
+  "frictions": [],
+  "blockers": []
+}
