@@ -25,7 +25,7 @@ This worker does not push to GitHub. It prepares validated local commits only.
 
 ## Windows Compatibility Notes
 
-- If `.factory/init.sh` cannot be executed directly in the current Windows shell, run the equivalent setup commands manually and note the substitution in the handoff.
+- If `.factory/init.sh` cannot be executed directly in the current Windows shell, run the equivalent PowerShell-safe setup commands manually: `go mod download`.
 - If a named reviewer subagent referenced by a skill is unavailable in this environment, use the available `worker` subagent as the fallback reviewer and note that substitution in the handoff.
 
 ## Work Procedure
@@ -68,7 +68,7 @@ This worker does not push to GitHub. It prepares validated local commits only.
 
 7. **Adversarial review**
    - Invoke `review` on the final local diff or branch delta.
-   - If the review subagent path is unavailable or returns no usable output, perform a manual adversarial review yourself by comparing the staged/local diff against the upstream PR intent, the validation contract, and nearby tests, then record that fallback in the handoff.
+   - If the review path is unavailable or returns no usable output, perform a manual adversarial review yourself by checking `git diff --cached` against the upstream PR intent, the validation contract, and nearby tests, then record that fallback in the handoff.
    - Fix any high-confidence correctness issues surfaced by that review.
    - Re-run targeted tests and any broader validation affected by the fix.
 
