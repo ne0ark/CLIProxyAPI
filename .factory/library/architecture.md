@@ -89,7 +89,9 @@ Important ownership/data-flow boundaries in this slice:
 
 - management handlers accept and normalize client payloads for API keys and policies
 - config state owns durable policy lookup and invalidation behavior
-- ACL middleware enforces the same restriction semantics on HTTP JSON routes, Gemini-style `/v1beta/models/...` routes, and websocket upgrades
+- ACL middleware enforces the same restriction semantics on HTTP JSON routes, Gemini-style `/v1beta/models/...` routes, websocket upgrades, **and Amp provider alias routes** under `/api/provider/:provider/` (including the Google v1beta1 bridge at `/api/provider/google/v1beta1/models/*`)
+
+The Amp provider alias surface in `internal/api/modules/amp/` wires `/api/provider/:provider/` as an alternative entry point to model-bearing endpoints. These aliases serve the same model-bearing routes as `/v1` and `/v1beta` but through a separate route group (`ampProviders`). Any middleware that gates model access (like the per-key ACL) must be applied to both the main route groups and the `ampProviders` group to avoid bypass paths.
 
 Key invariants for workers to preserve:
 

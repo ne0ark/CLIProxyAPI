@@ -1,0 +1,49 @@
+{
+  "milestone": "pr-2914",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "format": { "passed": true, "command": "gofmt -w ./cmd ./internal ./sdk ./test", "exitCode": 0 },
+    "build": { "passed": true, "command": "go build -o test-output.exe ./cmd/server", "exitCode": 0 },
+    "test": { "passed": true, "command": "go test -count=1 -p 16 ./...", "exitCode": 0 }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Added Amp provider alias routing architecture detail to architecture.md: documents that /api/provider/:provider/ routes are a separate route group (ampProviders) that also needs ACL middleware to avoid bypass paths.",
+      "sourceFeature": "pr-2914-replay-per-key-model-acl"
+    }
+  ],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "AGENTS.md",
+      "suggestion": "Add convention: prefer sync.Once-based helpers for gin.SetMode(gin.TestMode) in tests rather than init() functions. The init() pattern causes data races under -race when multiple test packages are compiled together.",
+      "evidence": "internal/api/model_acl_test.go uses init() for gin.SetMode, while internal/api/handlers/management/gin_test_mode_test.go uses a sync.Once helper. The init() pattern caused race conditions that required a follow-up commit (57d53acc) to fix in management tests.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills (pr-replay-worker)",
+      "suggestion": "Add explicit guidance that post-implementation review may require extending ACL/security middleware wiring to adjacent shipped route modules beyond the upstream PR file list. Workers should audit all route groups that serve model-bearing endpoints, not just the ones touched by the upstream PR.",
+      "evidence": "Worker session 9c393af7 had to extend ACL middleware to Amp provider alias routes (amp.go, routes.go, modules.go) that were not in the upstream PR #2914 file list but were necessary because the Amp provider aliases served model-bearing routes that bypassed the new ACL middleware.",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "environment.md was correctly updated to record that the race gate is actionable with the compiler path and CGO setup.",
+      "reason": "already-documented"
+    },
+    {
+      "observation": "services.yaml race_pr2914 command correctly documents the Windows-specific compiler path and CGO setup.",
+      "reason": "already-documented"
+    }
+  ],
+  "previousRound": null
+}

@@ -1,0 +1,54 @@
+{
+  "featureId": "pr-2914-replay-per-key-model-acl",
+  "reviewedAt": "2026-04-21T14:55:00Z",
+  "commitId": "57d53acc52793ddc8449c9a85efccef90a271777",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The two-commit replay (3094474f + 57d53acc) faithfully recreates the per-key model ACL feature from upstream PR #2914. The implementation spans four layers: (1) SDKConfig policy storage/cache in internal/config, (2) management API key payload parsing and policy sync in internal/api/handlers/management/config_lists.go, (3) ModelACLMiddleware wired into /v1 and /v1beta routes plus Amp provider aliases, and (4) comprehensive test coverage across all touched packages. The follow-up commit (57d53acc) correctly addressed three gaps found by review: unrestricted keys now short-circuit before body inspection, Amp provider aliases (including Google v1beta1 bridge) are ACL-enforced, and management tests use a serialized gin.SetMode helper to avoid race conditions under -race. All 16 validation assertions are covered by targeted tests. No blocking issues found.",
+    "issues": [
+      {
+        "file": "internal/api/model_acl.go",
+        "line": 117,
+        "severity": "non_blocking",
+        "description": "The v1beta1 path extraction uses `strings.Contains(c.Request.URL.Path, \"/v1beta1/\")` which is a loose match. This could theoretically match unintended paths that happen to contain `/v1beta1/` as a substring (e.g. `/some/v1beta1/something/models/gemini`). In practice this is benign because the middleware is only installed on known route groups and the subsequent `/models/` substring check further constrains matching, but it is slightly less precise than the v1beta handler which uses `strings.Index` on a known prefix."
+      },
+      {
+        "file": "internal/config/sdk_config.go",
+        "line": 130,
+        "severity": "non_blocking",
+        "description": "The `lookupPolicy` method has a CAS-based lazy index build path that clones `APIKeyPolicies` on every cache miss. This is a cold-path concern only — once built, the atomic pointer caches the result — but the clone-on-miss could be wasteful if many goroutines race to build the index simultaneously. The `CompareAndSwap` ensures only one build wins, but the losers still pay the clone cost before seeing the winner's result. Low severity since this is config-load-time, not hot-path."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "The gin.SetMode(gin.TestMode) call was placed in a package-level init() in model_acl_test.go, but management tests needed a sync.Once-based helper (gin_test_mode_test.go) to avoid races under -race. AGENTS.md does not document which pattern to use for gin test mode setup across packages, and the repo now has two competing patterns (init() vs sync.Once).",
+      "evidence": "internal/api/model_acl_test.go has `func init() { gin.SetMode(gin.TestMode) }`, while internal/api/handlers/management/gin_test_mode_test.go uses `var ginTestModeOnce sync.Once; func setGinTestMode() { ginTestModeOnce.Do(func() { gin.SetMode(gin.TestMode) }) }`. The management tests that originally had init() were updated to call setGinTestMode() instead."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The environment.md file was correctly updated by the first worker session to record that the race gate is now actionable (not environment-blocked) and documents the compiler path. This is well-maintained shared state.",
+      "evidence": "G:\\Droid.Claude\\CLIProxyAPI\\.factory\\library\\environment.md now includes the Windows compiler path, CGO setup instructions, and notes that the first successful race launch found real test issues rather than environment problems."
+    },
+    {
+      "area": "skills",
+      "observation": "The pr-replay-worker skill does not explicitly warn that a strict post-implementation review may surface the need to extend ACL wiring to adjacent shipped route modules (like Amp aliases) beyond the upstream PR file list. The second worker session (9c393af7) had to extend routes.go and amp.go, which were not in the upstream PR file list but were necessary because the Amp provider aliases served model-bearing routes that bypassed the new ACL middleware.",
+      "evidence": "Worker's skillFeedback.suggestedChanges notes: 'The replay skill could explicitly warn that a strict post-implementation review may require extending ACL wiring to adjacent shipped route modules (like Amp aliases) even when the upstream PR file list is narrower.' The diff of commit 57d53acc shows changes to amp.go, routes.go, and modules.go that were not in the upstream PR scope."
+    },
+    {
+      "area": "services",
+      "observation": "The race_pr2914 command in services.yaml correctly documents the Windows-specific compiler path and CGO setup. No gap here.",
+      "evidence": "services.yaml race_pr2914 command includes the full compiler-path setup documented in environment.md."
+    },
+    {
+      "area": "knowledge",
+      "observation": "The worker discovered that Amp provider alias routes under /api/provider/:provider/ serve model-bearing endpoints (e.g. /api/provider/google/v1beta/models/*) that were not ACL-protected by the initial replay. This architectural detail about how Amp routes relate to the main /v1 and /v1beta route groups is not documented in architecture.md.",
+      "evidence": "Commit 57d53acc added ModelACLMiddleware to the ampProviders group and moved the Google v1beta1 handler into the ACL-protected group. The architecture.md does not currently describe the Amp provider alias route surface or its relationship to the main API routes."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "PASS. The two-commit replay (3094474f feat + 57d53acc fix) faithfully recreates upstream PR #2914's per-key model ACL behavior. The implementation is well-structured across config, management, and middleware layers. The follow-up commit correctly closes three gaps found by adversarial review: unrestricted-key fast path, Amp provider alias coverage (including Google v1beta1 bridge), and gin.SetMode race safety. All 16 validation assertions (VAL-PR2914-001 through VAL-PR2914-016) are covered by targeted tests that passed with race detection enabled. Two non-blocking observations about v1beta1 path matching precision and cache-miss clone overhead were noted but do not affect correctness. Shared state observations include a gin test-mode convention gap, a skill gap around ACL extension to adjacent route modules, and a knowledge gap about Amp provider alias routing architecture."
+}
