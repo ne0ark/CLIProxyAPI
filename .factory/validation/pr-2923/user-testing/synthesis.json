@@ -1,0 +1,23 @@
+{
+  "milestone": "pr-2923",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-PR2923-001",
+    "VAL-PR2923-002",
+    "VAL-PR2923-003",
+    "VAL-PR2923-004",
+    "VAL-PR2923-005",
+    "VAL-PR2923-006"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [],
+  "previousRound": null
+}

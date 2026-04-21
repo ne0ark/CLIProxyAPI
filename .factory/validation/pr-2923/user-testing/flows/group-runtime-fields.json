@@ -1,0 +1,74 @@
+{
+  "groupId": "group-runtime-fields",
+  "testedAt": "2026-04-20T00:00:00Z",
+  "isolation": {
+    "repoRoot": "G:\\Droid.Claude\\CLIProxyAPI",
+    "branch": "dev",
+    "testSurface": "go test",
+    "package": "./internal/api/handlers/management/",
+    "sharedState": "none (fully isolated unit tests)"
+  },
+  "toolsUsed": ["go test"],
+  "assertions": [
+    {
+      "id": "VAL-PR2923-004",
+      "title": "Upload-time rebuild propagates the concrete single-auth runtime fields immediately",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Run go test -v -run TestUploadAuthFile_PropagatesRuntimeFieldsImmediately ./internal/api/handlers/management/ -count=1",
+          "expected": "Test passes — priority, prefix, proxy_url, disabled, note, and custom headers are all propagated immediately",
+          "observed": "PASS (0.00s) — test completed successfully confirming all runtime fields propagated immediately"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "n/a (unit test)",
+        "testOutput": "=== RUN   TestUploadAuthFile_PropagatesRuntimeFieldsImmediately\n--- PASS: TestUploadAuthFile_PropagatesRuntimeFieldsImmediately (0.00s)\nPASS\nok  \tgithub.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management\t0.158s"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-PR2923-005",
+      "title": "Uploaded priority affects auth selection without requiring a later reload",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Run go test -v -run TestUploadAuthFile_PriorityAffectsSelectionImmediately ./internal/api/handlers/management/ -count=1",
+          "expected": "Test passes — selector picks the higher-priority auth immediately after upload without requiring reload",
+          "observed": "PASS (0.00s) — test completed successfully confirming immediate priority-based selection"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "n/a (unit test)",
+        "testOutput": "=== RUN   TestUploadAuthFile_PriorityAffectsSelectionImmediately\n--- PASS: TestUploadAuthFile_PriorityAffectsSelectionImmediately (0.00s)\nPASS\nok  \tgithub.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management\t0.171s"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-PR2923-006",
+      "title": "Re-uploading an existing auth file updates propagated runtime fields without losing preserved timestamps",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Run go test -v -run TestUploadAuthFile_ReuploadPreservesIdentityAndTimestampsWhileUpdatingRuntimeFields ./internal/api/handlers/management/ -count=1",
+          "expected": "Test passes — ID, CreatedAt, LastRefreshedAt preserved while priority, note, prefix, proxy_url updated",
+          "observed": "PASS (0.01s) — test completed successfully confirming identity/timestamp preservation with runtime field updates"
+        }
+      ],
+      "evidence": {
+        "screenshots": [],
+        "consoleErrors": "none",
+        "network": "n/a (unit test)",
+        "testOutput": "=== RUN   TestUploadAuthFile_ReuploadPreservesIdentityAndTimestampsWhileUpdatingRuntimeFields\n--- PASS: TestUploadAuthFile_ReuploadPreservesIdentityAndTimestampsWhileUpdatingRuntimeFields (0.01s)\nPASS\nok  \tgithub.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management\t0.164s"
+      },
+      "issues": null
+    }
+  ],
+  "frictions": [],
+  "blockers": [],
+  "summary": "Tested 3 assertions: all 3 passed. Upload-time runtime field propagation (VAL-PR2923-004), immediate priority-based auth selection (VAL-PR2923-005), and re-upload identity/timestamp preservation with runtime field updates (VAL-PR2923-006) all confirmed working correctly."
+}

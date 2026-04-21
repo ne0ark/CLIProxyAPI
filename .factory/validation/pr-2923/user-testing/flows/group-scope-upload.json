@@ -1,0 +1,81 @@
+{
+  "groupId": "group-scope-upload",
+  "testedAt": "2026-04-20T22:30:00Z",
+  "isolation": {
+    "repoRoot": "G:\\Droid.Claude\\CLIProxyAPI",
+    "branch": "dev",
+    "commit": "761ddf08",
+    "milestone": "pr-2923"
+  },
+  "toolsUsed": ["gh pr view", "git diff --stat", "go test -v"],
+  "assertions": [
+    {
+      "id": "VAL-PR2923-001",
+      "title": "Recreated PR 2923 scope remains auth-upload priority propagation only",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "gh pr view 2923 --repo router-for-me/CLIProxyAPI --json files",
+          "expected": "Only auth_files.go (MODIFIED) and auth_files_upload_test.go (ADDED) in PR file list",
+          "observed": "Files: auth_files.go (29 additions, 14 deletions, MODIFIED), auth_files_upload_test.go (69 additions, 0 deletions, ADDED)"
+        },
+        {
+          "action": "git diff --stat 761ddf08~1 761ddf08",
+          "expected": "Only auth_files.go and auth_files_upload_test.go touched in local commit",
+          "observed": "auth_files.go (43 changes, 14 deletions), auth_files_upload_test.go (317 additions). Exactly 2 files touched."
+        }
+      ],
+      "evidence": {
+        "upstreamPRFiles": ["internal/api/handlers/management/auth_files.go", "internal/api/handlers/management/auth_files_upload_test.go"],
+        "localCommitFiles": ["internal/api/handlers/management/auth_files.go", "internal/api/handlers/management/auth_files_upload_test.go"],
+        "scopeMatch": true,
+        "note": "Both upstream PR and local commit touch only auth_files.go and auth_files_upload_test.go. Local commit has additional test coverage (317 lines vs 69 in upstream) but scope is confined to the same two files."
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-PR2923-002",
+      "title": "Uploaded top-level priority becomes a runtime auth attribute immediately",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "go test -v -run TestUploadAuthFile_PropagatesRuntimeFieldsImmediately ./internal/api/handlers/management/ -count=1",
+          "expected": "Test passes, confirming uploaded OAuth JSON with top-level priority becomes runtime attribute immediately",
+          "observed": "PASS (0.00s) - test completed successfully"
+        }
+      ],
+      "evidence": {
+        "testOutput": "=== RUN   TestUploadAuthFile_PropagatesRuntimeFieldsImmediately\n--- PASS: TestUploadAuthFile_PropagatesRuntimeFieldsImmediately (0.00s)\nPASS\nok  \tgithub.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management\t0.166s",
+        "exitCode": 0
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-PR2923-003",
+      "title": "Both supported upload entry points produce the same synthesized runtime auth state",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "go test -v -run TestUploadAuthFile_MultipartAndRawBodyProduceEquivalentRuntimeState ./internal/api/handlers/management/ -count=1",
+          "expected": "Test passes, confirming multipart and raw body uploads produce equivalent runtime state",
+          "observed": "PASS (0.00s) - test completed successfully"
+        }
+      ],
+      "evidence": {
+        "testOutput": "=== RUN   TestUploadAuthFile_MultipartAndRawBodyProduceEquivalentRuntimeState\n--- PASS: TestUploadAuthFile_MultipartAndRawBodyProduceEquivalentRuntimeState (0.00s)\nPASS\nok  \tgithub.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management\t0.159s",
+        "exitCode": 0
+      },
+      "issues": null
+    }
+  ],
+  "frictions": [
+    {
+      "description": "Windows PowerShell 5.1 does not support && operator for command chaining; required using ; instead",
+      "resolved": true,
+      "resolution": "Used semicolon (;) separator instead of && for cd and go test commands",
+      "affectedAssertions": ["VAL-PR2923-002", "VAL-PR2923-003"]
+    }
+  ],
+  "blockers": [],
+  "summary": "Tested 3 assertions: all 3 passed. VAL-PR2923-001 confirms scope is limited to auth_files.go and auth_files_upload_test.go (2 files only). VAL-PR2923-002 confirms uploaded priority propagates immediately to runtime auth. VAL-PR2923-003 confirms multipart and raw body uploads produce equivalent runtime state."
+}
