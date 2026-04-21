@@ -68,6 +68,7 @@ This worker does not push to GitHub. It prepares validated local commits only.
 
 7. **Adversarial review**
    - Invoke `review` on the final local diff or branch delta.
+   - If the review subagent path is unavailable or returns no usable output, perform a manual adversarial review yourself by comparing the staged/local diff against the upstream PR intent, the validation contract, and nearby tests, then record that fallback in the handoff.
    - Fix any high-confidence correctness issues surfaced by that review.
    - Re-run targeted tests and any broader validation affected by the fix.
 
