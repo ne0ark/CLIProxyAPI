@@ -1,0 +1,21 @@
+{
+  "featureId": "r6931-auth-refresh-backoff",
+  "reviewedAt": "2026-04-21T15:31:00Z",
+  "commitId": "b76ce52f4305df8377c33065136a0a020add6fa0",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation is a faithful replay of upstream commit e6866ff, adding a 30-second ineffective-refresh backoff to prevent tight-looping in the auto-refresh scheduler. The conductor.go change is identical in logic to the upstream patch. Two well-scoped tests cover both validation contract assertions: VAL-R6931-AUTH-001 (ineffective refreshes are throttled) and VAL-R6931-AUTH-002 (backoff gates repeat attempts until it expires). The diff stays within the conductor slice and directly related tests. PR-2895 count-tokens behavior is untouched.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "Worker noted the generic review skill should mention fallback reviewer names when `file-group-reviewer` is not installed. The pr-replay-worker SKILL.md already has a Windows Compatibility Notes section that addresses the `init.sh` and reviewer fallback scenarios, so the worker's deviations were covered by the existing skill guidance.",
+      "evidence": "Worker handoff skillFeedback.deviations documents both fallback decisions. SKILL.md 'Windows Compatibility Notes' section explicitly permits both substitutions."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Clean pass. The replay faithfully reproduces upstream commit e6866ff's ineffective-refresh backoff logic (30-second `refreshIneffectiveBackoff` in `refreshAuth()`). Two new tests in `conductor_scheduler_refresh_test.go` cover both validation assertions. Scope is tight — only `conductor.go` (implementation) and the test file changed. PR-2895 count-tokens tests in `conductor_overrides_test.go` are completely untouched, confirming no regression. All validation passed: gofmt, go build, scoped auth tests, full repo test suite, and pre-commit hooks."
+}
