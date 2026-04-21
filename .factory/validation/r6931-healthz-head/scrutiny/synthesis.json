@@ -1,0 +1,46 @@
+{
+  "milestone": "r6931-healthz-head",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "go test -count=1 -p 16 ./...",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "go build -o test-output.exe ./cmd/server",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "gofmt -l internal/api/server.go internal/api/server_test.go",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "skills/pr-replay-worker",
+      "suggestion": "Document an explicit commit-inspection variant of the replay procedure for release-tag milestones. Currently the skill is written around PR-oriented workflows (gh pr view, gh pr diff), but release-tag milestones need gh api repos/.../commits/<sha> instead. Making this a first-class option would avoid followedProcedure=false for valid release-tag replays.",
+      "evidence": "Feature r6931-healthz-head worker had to deviate from the pr-replay-worker procedure to use commit-based inspection via gh api instead of gh pr view. Similarly, r6931-auth-refresh-backoff and r6931-codex-stream-output are release-tag milestones that would need the same adaptation.",
+      "isSystemic": true
+    },
+    {
+      "target": "skills/pr-replay-worker",
+      "suggestion": "Make the reviewer fallback (invoking the review skill directly when agent-browser is unavailable) a documented first-class option rather than a deviation. Multiple release-tag milestone workers have hit this constraint.",
+      "evidence": "Feature r6931-healthz-head worker reported followedProcedure=false due to the reviewer fallback deviation. This is an environment constraint that applies broadly to Windows-based sessions.",
+      "isSystemic": true
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}
