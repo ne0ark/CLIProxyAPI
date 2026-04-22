@@ -27,6 +27,27 @@ repos:
         stages:
           - pre-commit
 
+      - id: check-tech-debt
+        name: go run ./cmd/checktechdebt
+        entry: go
+        args:
+          - run
+          - ./cmd/checktechdebt
+        language: system
+        pass_filenames: false
+        stages:
+          - pre-commit
+
+      - id: go-mod-tidy-check
+        name: python3 .pre-commit-hooks/check_go_mod_tidy.py
+        entry: python3 .pre-commit-hooks/check_go_mod_tidy.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages:
+          - pre-commit
+          - pre-push
+
       - id: go-test
         name: go test ./...
         entry: go

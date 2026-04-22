@@ -21,6 +21,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check Go module hygiene
+        run: python3 .pre-commit-hooks/check_go_mod_tidy.py
+      - name: Check tracked technical debt
+        id: techdebt
+        continue-on-error: true
+        run: go run ./cmd/checktechdebt --format json --output technical-debt-report.json
       - name: Run gocyclo on watcher diff
         run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 13 ./internal/watcher/diff
       - name: Run scoped dupl on sdk/api/handlers
@@ -33,3 +39,13 @@ jobs:
         with:
           version: v1.64.8
           args: --timeout 10m
+      - name: Upload technical debt report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: technical-debt-report
+          path: technical-debt-report.json
+          if-no-files-found: error
+      - name: Fail if technical debt check failed
+        if: steps.techdebt.outcome == 'failure'
+        run: exit 1
