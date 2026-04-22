@@ -1,0 +1,33 @@
+{
+  "milestone": "r6932-kimi-k2.6",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "go test ./internal/registry/...",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "go build -o test-output.exe ./cmd/server",
+      "exitCode": 0
+    },
+    "full": {
+      "passed": true,
+      "command": "go test ./...",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [],
+  "rejectedObservations": [],
+  "previousRound": null
+}
