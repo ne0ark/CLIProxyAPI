@@ -139,9 +139,9 @@ func TestPayloadFilterModelWildcardMatching(t *testing.T) {
 	}
 
 	tests := []struct {
-		model         string
-		shouldFilter  bool
-		description   string
+		model        string
+		shouldFilter bool
+		description  string
 	}{
 		{"grok-3", true, "Grok model should match grok-* wildcard"},
 		{"grok-3-mini", true, "Grok mini model should match grok-* wildcard"},

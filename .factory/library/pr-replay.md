@@ -21,6 +21,10 @@ After the PR milestones above:
 5. `v6.9.31` auth refresh ineffective-backoff
 6. `v6.9.31` Codex streaming output backfill/perf follow-up
 7. `v6.9.31` `HEAD /healthz`
+8. `v6.9.32` Kimi K2.6 registry entry
+9. `v6.9.32` GPT-Image-2 Codex image routes
+10. `v6.9.33` OpenAI image handler `n` parameter removal (handling)
+11. `v6.9.34` OpenAI image handler `n` parameter removal (references)
 
 Evaluated and already satisfied locally:
 

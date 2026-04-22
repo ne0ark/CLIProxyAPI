@@ -119,6 +119,22 @@ This slice lives in the Codex stream executor. The key invariant is that when th
 
 This slice lives in server route wiring. The invariant is simple: readiness checks must accept both `GET /healthz` and bodyless `HEAD /healthz` without changing existing health semantics.
 
+### Release `v6.9.33` + `v6.9.34` OpenAI image handler `n` parameter cleanup
+
+- Main area: `sdk/api/handlers/openai/openai_images_handlers.go`
+
+This slice lives in the OpenAI-compatible image generation handler. Upstream removed handling and then all remaining references to the unsupported `n` (image count) parameter. The core invariants for the replay are:
+
+- The handler must not read or forward the `n` field to upstream image providers.
+- Any associated handler tests continue to reflect parity with upstream behavior, without introducing new coverage for a dropped field.
+- The change stays scoped to the OpenAI images handler; Gemini / Claude image paths are out of scope for this replay.
+
+### Delta documentation surface
+
+- Main area: repo-root `CHANGELOG.md` and `docs/wiki/upstream-delta.md`
+
+This surface is documentation-only and must never edit Go source, config, tests, or CI. The invariant is that every replayed upstream commit cites both upstream SHA and local SHA, and every intentional ne0ark-only divergence is categorized against the taxonomy in `.factory/library/delta-doc.md`.
+
 ## Non-copyable SDKConfig
 
 `internal/config/sdk_config.go` contains `SDKConfig` which now has a `policyIndex atomic.Pointer[map[string]APIKeyPolicy]` field. This makes `SDKConfig` non-copyable by value — any attempt to copy it will trigger `govet copylocks` failures.

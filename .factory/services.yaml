@@ -7,5 +7,9 @@ commands:
   build: go build -o test-output.exe ./cmd/server; if (Test-Path test-output.exe) { Remove-Item test-output.exe }
   compilecheck: go build -o test-output.exe ./cmd/server; if (Test-Path test-output.exe) { Remove-Item test-output.exe }
   race_pr2914: $bin='C:\Users\Janak Kalaria\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260407-ucrt-x86_64\bin'; $env:PATH="$bin;$env:PATH"; $env:CGO_ENABLED='1'; $env:CC='gcc'; go test -race -count=1 ./internal/api ./internal/api/handlers/management ./internal/config
+  openai_images_test: go test ./sdk/api/handlers/openai/... -count=1 -v
+  upstream_fetch: git fetch upstream --prune
+  diff_upstream_local: git diff --name-status dev..upstream/dev
+  diff_local_upstream: git diff --name-status upstream/dev..dev
 
 services: {}
