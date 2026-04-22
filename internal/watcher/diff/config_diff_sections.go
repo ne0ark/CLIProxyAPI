@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 )
 
 func appendConfigScalarChanges(changes []string, oldCfg, newCfg *config.Config) []string {
@@ -54,6 +55,26 @@ func appendRoutingChange(changes []string, oldCfg, newCfg *config.Config) []stri
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	return changes
+}
+
+func appendFeatureFlagChanges(changes []string, oldCfg, newCfg *config.Config) []string {
+	oldFlags := featureflags.Resolve(oldCfg)
+	newFlags := featureflags.Resolve(newCfg)
+
+	changes = appendBoolChange(
+		changes,
+		"feature-flags.routing.auto-model-resolution",
+		oldFlags.Routing.AutoModelResolution,
+		newFlags.Routing.AutoModelResolution,
+	)
+	changes = appendBoolChange(
+		changes,
+		"feature-flags.gemini.attach-default-safety-settings",
+		oldFlags.Gemini.AttachDefaultSafetySettings,
+		newFlags.Gemini.AttachDefaultSafetySettings,
+	)
+
 	return changes
 }
 

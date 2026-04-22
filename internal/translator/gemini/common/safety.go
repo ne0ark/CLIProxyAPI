@@ -1,6 +1,7 @@
 package common
 
 import (
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -34,6 +35,9 @@ func DefaultSafetySettings() []map[string]string {
 // AttachDefaultSafetySettings ensures the default safety settings are present when absent.
 // The caller must provide the target JSON path (e.g. "safetySettings" or "request.safetySettings").
 func AttachDefaultSafetySettings(rawJSON []byte, path string) []byte {
+	if !featureflags.GeminiAttachDefaultSafetySettingsEnabled() {
+		return rawJSON
+	}
 	if gjson.GetBytes(rawJSON, path).Exists() {
 		return rawJSON
 	}

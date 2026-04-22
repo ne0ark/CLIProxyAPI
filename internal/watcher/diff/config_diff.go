@@ -18,6 +18,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	changes = appendConfigScalarChanges(changes, oldCfg, newCfg)
 	changes = appendQuotaExceededChanges(changes, oldCfg, newCfg)
 	changes = appendRoutingChange(changes, oldCfg, newCfg)
+	changes = appendFeatureFlagChanges(changes, oldCfg, newCfg)
 	changes = appendAPIKeysChanges(changes, oldCfg, newCfg)
 	changes = appendGeminiKeyChanges(changes, oldCfg, newCfg)
 	changes = appendClaudeKeyChanges(changes, oldCfg, newCfg)

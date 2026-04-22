@@ -86,6 +86,9 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// FeatureFlags controls opt-in runtime behaviors with centrally managed defaults.
+	FeatureFlags *FeatureFlagsConfig `yaml:"feature-flags,omitempty" json:"feature-flags,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
@@ -230,6 +233,26 @@ type RoutingConfig struct {
 	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+}
+
+// FeatureFlagsConfig groups feature-flag overrides by subsystem.
+type FeatureFlagsConfig struct {
+	Routing FeatureFlagRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
+	Gemini  FeatureFlagGeminiConfig  `yaml:"gemini,omitempty" json:"gemini,omitempty"`
+}
+
+// FeatureFlagRoutingConfig contains routing feature-flag overrides.
+type FeatureFlagRoutingConfig struct {
+	// AutoModelResolution controls whether model="auto" resolves to the first available model.
+	// Defaults to true to preserve legacy behavior.
+	AutoModelResolution *bool `yaml:"auto-model-resolution,omitempty" json:"auto-model-resolution,omitempty"`
+}
+
+// FeatureFlagGeminiConfig contains Gemini feature-flag overrides.
+type FeatureFlagGeminiConfig struct {
+	// AttachDefaultSafetySettings controls whether Gemini translators attach fallback safety settings.
+	// Defaults to true to preserve legacy behavior.
+	AttachDefaultSafetySettings *bool `yaml:"attach-default-safety-settings,omitempty" json:"attach-default-safety-settings,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

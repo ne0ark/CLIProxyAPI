@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
@@ -69,6 +70,9 @@ func GetProviderName(modelName string) []string {
 //   - string: The resolved model name, or the original if not "auto" or resolution fails
 func ResolveAutoModel(modelName string) string {
 	if modelName != "auto" {
+		return modelName
+	}
+	if !featureflags.RoutingAutoModelResolutionEnabled() {
 		return modelName
 	}
 

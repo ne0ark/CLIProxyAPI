@@ -111,6 +111,13 @@ routing:
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
 
+# Runtime feature flags. All flags default to true unless explicitly disabled.
+# feature-flags:
+#   routing:
+#     auto-model-resolution: true
+#   gemini:
+#     attach-default-safety-settings: true
+
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false
 

@@ -13,6 +13,8 @@ permissions:
 jobs:
   code-quality-metrics:
     runs-on: ubuntu-latest
+    env:
+      FLAKY_TEST_REPEAT_COUNT: "5"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,8 +35,8 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Validate metrics helper
-        run: python3 -m py_compile .github/scripts/code_quality_metrics.py
+      - name: Validate metrics helpers
+        run: python3 -m py_compile .github/scripts/code_quality_metrics.py .github/scripts/flaky_test_detection.py
 
       - name: Measure canonical build performance
         run: |
@@ -126,6 +128,19 @@ jobs:
               raise SystemExit(completed.returncode)
           PY
 
+      - name: Run repeated flaky test probes
+        run: |
+          python3 .github/scripts/flaky_test_detection.py \
+            --package ./internal/watcher \
+            --package ./sdk/cliproxy/auth \
+            --package ./sdk/api/handlers/openai \
+            --package ./test \
+            --repeat-count "${FLAKY_TEST_REPEAT_COUNT}" \
+            --events-out flaky-test-events.jsonl \
+            --json-out flaky-test-detection.json \
+            --md-out flaky-test-detection.md
+          cat flaky-test-detection.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Generate cyclomatic complexity report
         run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 0 . > gocyclo-report.txt
 
@@ -137,6 +152,7 @@ jobs:
             --tech-debt technical-debt-report.json \
             --build-performance build-performance.json \
             --test-performance test-performance.json \
+            --flaky-test-report flaky-test-detection.json \
             --json-out code-quality-metrics.json \
             --md-out code-quality-metrics.md
           cat code-quality-metrics.md >> "$GITHUB_STEP_SUMMARY"
@@ -151,6 +167,9 @@ jobs:
             technical-debt-report.json
             build-performance.json
             test-performance.json
+            flaky-test-events.jsonl
+            flaky-test-detection.json
+            flaky-test-detection.md
             code-quality-metrics.json
             code-quality-metrics.md
           if-no-files-found: error

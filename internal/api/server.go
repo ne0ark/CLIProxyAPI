@@ -26,6 +26,7 @@ import (
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -256,6 +257,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
+	featureflags.ApplyConfig(cfg)
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
@@ -917,6 +919,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 
 	applySignatureCacheConfig(oldCfg, cfg)
+	featureflags.ApplyConfig(cfg)
 
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)

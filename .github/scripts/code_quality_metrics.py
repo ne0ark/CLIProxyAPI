@@ -25,13 +25,17 @@ GOCYCLO_LINE_RE = re.compile(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate consolidated code quality metrics from coverage, gocyclo, technical debt, build performance, and test performance inputs."
+        description=(
+            "Generate consolidated code quality metrics from coverage, gocyclo, technical debt, "
+            "build performance, test performance, and optional flaky-test detection inputs."
+        )
     )
     parser.add_argument("--coverage", required=True, help="Path to go coverage profile output")
     parser.add_argument("--complexity", required=True, help="Path to gocyclo text output")
     parser.add_argument("--tech-debt", required=True, help="Path to technical debt JSON output")
     parser.add_argument("--build-performance", help="Path to canonical build performance JSON output")
     parser.add_argument("--test-performance", help="Path to full-suite test performance JSON output")
+    parser.add_argument("--flaky-test-report", help="Path to flaky test detection JSON output")
     parser.add_argument("--json-out", required=True, help="Path to the generated JSON report")
     parser.add_argument("--md-out", required=True, help="Path to the generated Markdown report")
     return parser.parse_args()
@@ -279,12 +283,38 @@ def parse_test_performance(path: Path) -> dict[str, Any]:
     }
 
 
+def parse_flaky_test_report(path: Path) -> dict[str, Any]:
+    payload = json.loads(read_text(path))
+    summary = payload.get("summary") or {}
+    probe_configuration = payload.get("probe_configuration") or {}
+    flaky_tests = payload.get("flaky_tests") or []
+    missing_requested_packages = payload.get("missing_requested_packages") or []
+
+    return {
+        "report": str(path),
+        "command_template": str(probe_configuration.get("command_template", "")),
+        "repeat_count": int(probe_configuration.get("repeat_count", 0)),
+        "requested_packages": int(summary.get("requested_packages", 0)),
+        "requested_packages_without_events": int(summary.get("requested_packages_without_events", 0)),
+        "observed_packages": int(summary.get("observed_packages", 0)),
+        "runs_executed": int(summary.get("runs_executed", 0)),
+        "failing_runs": int(summary.get("failing_runs", 0)),
+        "unique_tests_observed": int(summary.get("unique_tests_observed", 0)),
+        "flaky_tests": int(summary.get("flaky_tests", 0)),
+        "packages_with_flaky_tests": int(summary.get("packages_with_flaky_tests", 0)),
+        "clean": bool(summary.get("clean", False)),
+        "missing_requested_packages_preview": missing_requested_packages[:TOP_ENTRY_LIMIT],
+        "flaky_tests_preview": flaky_tests[:TOP_ENTRY_LIMIT],
+    }
+
+
 def build_report(
     coverage_path: Path,
     complexity_path: Path,
     tech_debt_path: Path,
     build_performance_path: Path | None = None,
     test_performance_path: Path | None = None,
+    flaky_test_report_path: Path | None = None,
 ) -> dict[str, Any]:
     coverage = parse_coverage(coverage_path)
     complexity = parse_complexity(complexity_path)
@@ -294,6 +324,9 @@ def build_report(
     )
     test_performance = (
         parse_test_performance(test_performance_path) if test_performance_path is not None else None
+    )
+    flaky_test_report = (
+        parse_flaky_test_report(flaky_test_report_path) if flaky_test_report_path is not None else None
     )
 
     summary = {
@@ -321,6 +354,16 @@ def build_report(
                 "test_succeeded": test_performance["exit_code"] == 0,
             }
         )
+    if flaky_test_report is not None:
+        summary.update(
+            {
+                "flaky_runs_executed": flaky_test_report["runs_executed"],
+                "flaky_failing_runs": flaky_test_report["failing_runs"],
+                "flaky_tests_detected": flaky_test_report["flaky_tests"],
+                "flaky_packages": flaky_test_report["packages_with_flaky_tests"],
+                "flaky_signal_clean": flaky_test_report["clean"],
+            }
+        )
 
     return {
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -330,6 +373,7 @@ def build_report(
             "tech_debt": str(tech_debt_path),
             "build_performance": str(build_performance_path) if build_performance_path is not None else None,
             "test_performance": str(test_performance_path) if test_performance_path is not None else None,
+            "flaky_test_report": str(flaky_test_report_path) if flaky_test_report_path is not None else None,
         },
         "summary": summary,
         "coverage": coverage,
@@ -337,6 +381,7 @@ def build_report(
         "maintainability": maintainability,
         "build_performance": build_performance,
         "test_performance": test_performance,
+        "flaky_test_report": flaky_test_report,
     }
 
 
@@ -350,6 +395,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     maintainability = report["maintainability"]
     build_performance = report.get("build_performance")
     test_performance = report.get("test_performance")
+    flaky_test_report = report.get("flaky_test_report")
 
     lines = [
         "# Code Quality Metrics",
@@ -394,6 +440,15 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"| Tests | Coverage profile size | {format_bytes(test_performance['coverage_profile_size_bytes'])} |",
             ]
         )
+    if flaky_test_report is not None:
+        lines.extend(
+            [
+                f"| Flaky tests | Repeated runs executed | {flaky_test_report['runs_executed']} |",
+                f"| Flaky tests | Failing repeated runs | {flaky_test_report['failing_runs']} |",
+                f"| Flaky tests | Flaky tests detected | {flaky_test_report['flaky_tests']} |",
+                f"| Flaky tests | Clean signal | {str(flaky_test_report['clean']).lower()} |",
+            ]
+        )
 
     lines.extend(
         [
@@ -410,6 +465,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append(f"- Build: `{table_escape(build_performance['command_display'])}`")
     if test_performance is not None:
         lines.append(f"- Test performance: `{table_escape(test_performance['command_display'])}`")
+    if flaky_test_report is not None and flaky_test_report["command_template"]:
+        lines.append(
+            f"- Flaky test detection: `{table_escape(flaky_test_report['command_template'])}` repeated `{flaky_test_report['repeat_count']}` times per curated package"
+        )
 
     lines.extend([""])
 
@@ -447,6 +506,55 @@ def render_markdown(report: dict[str, Any]) -> str:
                 "",
             ]
         )
+
+    if flaky_test_report is not None:
+        lines.extend(
+            [
+                "## Flaky Test Detection",
+                "",
+                "| Metric | Value |",
+                "| --- | --- |",
+                f"| Command template | `{table_escape(flaky_test_report['command_template'])}` |",
+                f"| Repeat count | {flaky_test_report['repeat_count']} |",
+                f"| Requested packages | {flaky_test_report['requested_packages']} |",
+                f"| Observed packages | {flaky_test_report['observed_packages']} |",
+                f"| Repeated runs executed | {flaky_test_report['runs_executed']} |",
+                f"| Failing repeated runs | {flaky_test_report['failing_runs']} |",
+                f"| Unique tests observed | {flaky_test_report['unique_tests_observed']} |",
+                f"| Flaky tests detected | {flaky_test_report['flaky_tests']} |",
+                f"| Packages with flaky tests | {flaky_test_report['packages_with_flaky_tests']} |",
+                f"| Missing requested packages | {flaky_test_report['requested_packages_without_events']} |",
+                "",
+            ]
+        )
+
+        if flaky_test_report["missing_requested_packages_preview"]:
+            lines.extend(
+                [
+                    "### Missing Requested Packages",
+                    "",
+                ]
+            )
+            for package_target in flaky_test_report["missing_requested_packages_preview"]:
+                lines.append(f"- `{table_escape(package_target)}`")
+            lines.append("")
+
+        if flaky_test_report["flaky_tests"] == 0:
+            lines.extend(["No flaky tests were detected across the curated repeated probes.", ""])
+        else:
+            lines.extend(
+                [
+                    "### Flaky Tests Preview",
+                    "",
+                    "| Package | Test | Passes | Fails | Attempts |",
+                    "| --- | --- | ---: | ---: | ---: |",
+                ]
+            )
+            for item in flaky_test_report["flaky_tests_preview"]:
+                lines.append(
+                    f"| `{table_escape(item['package'])}` | `{table_escape(item['test'])}` | {item['pass_count']} | {item['fail_count']} | {item['attempts']} |"
+                )
+            lines.append("")
 
     lines.extend(
         [
@@ -514,6 +622,7 @@ def main() -> int:
     tech_debt_path = Path(args.tech_debt)
     build_performance_path = Path(args.build_performance) if args.build_performance else None
     test_performance_path = Path(args.test_performance) if args.test_performance else None
+    flaky_test_report_path = Path(args.flaky_test_report) if args.flaky_test_report else None
     json_out = Path(args.json_out)
     md_out = Path(args.md_out)
 
@@ -523,6 +632,7 @@ def main() -> int:
         tech_debt_path,
         build_performance_path,
         test_performance_path,
+        flaky_test_report_path,
     )
     markdown = render_markdown(report)
 

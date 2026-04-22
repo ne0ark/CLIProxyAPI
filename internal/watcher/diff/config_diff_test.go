@@ -309,6 +309,27 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "remote-management.secret-key: deleted")
 }
 
+func TestBuildConfigChangeDetails_FeatureFlags(t *testing.T) {
+	autoModelResolution := false
+	attachDefaultSafetySettings := false
+
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{
+		FeatureFlags: &config.FeatureFlagsConfig{
+			Routing: config.FeatureFlagRoutingConfig{
+				AutoModelResolution: &autoModelResolution,
+			},
+			Gemini: config.FeatureFlagGeminiConfig{
+				AttachDefaultSafetySettings: &attachDefaultSafetySettings,
+			},
+		},
+	}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "feature-flags.routing.auto-model-resolution: true -> false")
+	expectContains(t, details, "feature-flags.gemini.attach-default-safety-settings: true -> false")
+}
+
 func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	oldCfg := &config.Config{
 		Port:                   1,

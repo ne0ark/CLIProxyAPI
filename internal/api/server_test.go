@@ -12,10 +12,12 @@ import (
 
 	gin "github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"gopkg.in/yaml.v3"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -340,5 +342,53 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
+	}
+}
+
+func TestServerUpdateClientsAppliesFeatureFlags(t *testing.T) {
+	previous := featureflags.Current()
+	t.Cleanup(func() {
+		featureflags.Apply(previous)
+	})
+
+	boolPtr := func(value bool) *bool { return &value }
+
+	server := newConfiguredTestServer(t, &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: []string{"test-key"},
+		},
+		FeatureFlags: &proxyconfig.FeatureFlagsConfig{
+			Routing: proxyconfig.FeatureFlagRoutingConfig{
+				AutoModelResolution: boolPtr(false),
+			},
+			Gemini: proxyconfig.FeatureFlagGeminiConfig{
+				AttachDefaultSafetySettings: boolPtr(false),
+			},
+		},
+	})
+
+	if featureflags.RoutingAutoModelResolutionEnabled() {
+		t.Fatal("expected routing.auto-model-resolution to be disabled after server startup")
+	}
+	if featureflags.GeminiAttachDefaultSafetySettingsEnabled() {
+		t.Fatal("expected gemini.attach-default-safety-settings to be disabled after server startup")
+	}
+
+	var updated proxyconfig.Config
+	raw, err := yaml.Marshal(server.cfg)
+	if err != nil {
+		t.Fatalf("failed to copy server config: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &updated); err != nil {
+		t.Fatalf("failed to decode copied server config: %v", err)
+	}
+	updated.FeatureFlags = nil
+	server.UpdateClients(&updated)
+
+	if !featureflags.RoutingAutoModelResolutionEnabled() {
+		t.Fatal("expected routing.auto-model-resolution to return to default after hot reload")
+	}
+	if !featureflags.GeminiAttachDefaultSafetySettingsEnabled() {
+		t.Fatal("expected gemini.attach-default-safety-settings to return to default after hot reload")
 	}
 }
