@@ -25,11 +25,13 @@ GOCYCLO_LINE_RE = re.compile(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate consolidated code quality metrics from coverage, gocyclo, and technical debt inputs."
+        description="Generate consolidated code quality metrics from coverage, gocyclo, technical debt, build performance, and test performance inputs."
     )
     parser.add_argument("--coverage", required=True, help="Path to go coverage profile output")
     parser.add_argument("--complexity", required=True, help="Path to gocyclo text output")
     parser.add_argument("--tech-debt", required=True, help="Path to technical debt JSON output")
+    parser.add_argument("--build-performance", help="Path to canonical build performance JSON output")
+    parser.add_argument("--test-performance", help="Path to full-suite test performance JSON output")
     parser.add_argument("--json-out", required=True, help="Path to the generated JSON report")
     parser.add_argument("--md-out", required=True, help="Path to the generated Markdown report")
     return parser.parse_args()
@@ -39,6 +41,27 @@ def percent(numerator: float, denominator: float) -> float:
     if denominator == 0:
         return 0.0
     return round((numerator / denominator) * 100, 2)
+
+
+def format_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.3f} s"
+
+    minutes = int(seconds // 60)
+    remaining_seconds = seconds - (minutes * 60)
+    return f"{minutes}m {remaining_seconds:.3f}s"
+
+
+def format_bytes(size_bytes: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    size = float(size_bytes)
+
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024
 
 
 def load_module_prefix() -> str:
@@ -72,7 +95,7 @@ def read_text(path: Path) -> str:
     raw = path.read_bytes()
     for encoding in ("utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
         try:
-            return raw.decode(encoding)
+            return raw.decode(encoding).lstrip("\ufeff")
         except UnicodeDecodeError:
             continue
     raise UnicodeDecodeError("unknown", raw, 0, 1, f"unable to decode {path}")
@@ -210,10 +233,94 @@ def parse_tech_debt(path: Path) -> dict[str, Any]:
     }
 
 
-def build_report(coverage_path: Path, complexity_path: Path, tech_debt_path: Path) -> dict[str, Any]:
+def parse_command_performance_payload(path: Path) -> tuple[dict[str, Any], list[Any], str]:
+    payload = json.loads(read_text(path))
+    command = payload.get("command") or []
+    command_display = payload.get("command_display")
+    if not command_display and isinstance(command, list):
+        command_display = " ".join(str(part) for part in command)
+
+    if not command_display:
+        raise ValueError(f"performance report does not contain a command: {path}")
+
+    return payload, command, command_display
+
+
+def parse_build_performance(path: Path) -> dict[str, Any]:
+    payload, command, command_display = parse_command_performance_payload(path)
+
+    return {
+        "report": str(path),
+        "command": command,
+        "command_display": command_display,
+        "started_at_utc": str(payload["started_at_utc"]),
+        "finished_at_utc": str(payload["finished_at_utc"]),
+        "duration_seconds": round(float(payload["duration_seconds"]), 3),
+        "exit_code": int(payload.get("exit_code", 0)),
+        "output_path": str(payload["output_path"]),
+        "output_size_bytes": int(payload["output_size_bytes"]),
+    }
+
+
+def parse_test_performance(path: Path) -> dict[str, Any]:
+    payload, command, command_display = parse_command_performance_payload(path)
+
+    return {
+        "report": str(path),
+        "command": command,
+        "command_display": command_display,
+        "started_at_utc": str(payload["started_at_utc"]),
+        "finished_at_utc": str(payload["finished_at_utc"]),
+        "duration_seconds": round(float(payload["duration_seconds"]), 3),
+        "exit_code": int(payload.get("exit_code", 0)),
+        "coverage_profile_path": str(payload.get("coverage_profile_path", "")),
+        "coverage_profile_exists": bool(payload.get("coverage_profile_exists", False)),
+        "coverage_profile_size_bytes": int(payload.get("coverage_profile_size_bytes", 0)),
+    }
+
+
+def build_report(
+    coverage_path: Path,
+    complexity_path: Path,
+    tech_debt_path: Path,
+    build_performance_path: Path | None = None,
+    test_performance_path: Path | None = None,
+) -> dict[str, Any]:
     coverage = parse_coverage(coverage_path)
     complexity = parse_complexity(complexity_path)
     maintainability = parse_tech_debt(tech_debt_path)
+    build_performance = (
+        parse_build_performance(build_performance_path) if build_performance_path is not None else None
+    )
+    test_performance = (
+        parse_test_performance(test_performance_path) if test_performance_path is not None else None
+    )
+
+    summary = {
+        "coverage_percent": coverage["percent"],
+        "average_cyclomatic_complexity": complexity["average_cyclomatic_complexity"],
+        "max_cyclomatic_complexity": complexity["max_cyclomatic_complexity"],
+        "technical_debt_findings": maintainability["technical_debt_findings"],
+        "technical_debt_clean": maintainability["technical_debt_findings"] == 0,
+    }
+    if build_performance is not None:
+        summary.update(
+            {
+                "build_duration_seconds": build_performance["duration_seconds"],
+                "build_exit_code": build_performance["exit_code"],
+                "build_output_size_bytes": build_performance["output_size_bytes"],
+                "build_succeeded": build_performance["exit_code"] == 0,
+            }
+        )
+    if test_performance is not None:
+        summary.update(
+            {
+                "test_duration_seconds": test_performance["duration_seconds"],
+                "test_exit_code": test_performance["exit_code"],
+                "test_coverage_profile_size_bytes": test_performance["coverage_profile_size_bytes"],
+                "test_succeeded": test_performance["exit_code"] == 0,
+            }
+        )
 
     return {
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -221,17 +328,15 @@ def build_report(coverage_path: Path, complexity_path: Path, tech_debt_path: Pat
             "coverage": str(coverage_path),
             "complexity": str(complexity_path),
             "tech_debt": str(tech_debt_path),
+            "build_performance": str(build_performance_path) if build_performance_path is not None else None,
+            "test_performance": str(test_performance_path) if test_performance_path is not None else None,
         },
-        "summary": {
-            "coverage_percent": coverage["percent"],
-            "average_cyclomatic_complexity": complexity["average_cyclomatic_complexity"],
-            "max_cyclomatic_complexity": complexity["max_cyclomatic_complexity"],
-            "technical_debt_findings": maintainability["technical_debt_findings"],
-            "technical_debt_clean": maintainability["technical_debt_findings"] == 0,
-        },
+        "summary": summary,
         "coverage": coverage,
         "complexity": complexity,
         "maintainability": maintainability,
+        "build_performance": build_performance,
+        "test_performance": test_performance,
     }
 
 
@@ -243,13 +348,15 @@ def render_markdown(report: dict[str, Any]) -> str:
     coverage = report["coverage"]
     complexity = report["complexity"]
     maintainability = report["maintainability"]
+    build_performance = report.get("build_performance")
+    test_performance = report.get("test_performance")
 
     lines = [
         "# Code Quality Metrics",
         "",
         f"_Generated: {report['generated_at_utc']}_",
         "",
-        "This report consolidates repository-wide coverage, cyclomatic complexity, and maintainability signals.",
+        "This report consolidates repository-wide coverage, cyclomatic complexity, maintainability, and performance signals.",
         "",
         "## Scorecard",
         "",
@@ -268,18 +375,87 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| Maintainability | Impacted files | {maintainability['impacted_files']} |",
         f"| Maintainability | Debt-free scan rate | {maintainability['debt_free_rate']:.2f}% |",
         f"| Maintainability | Finding density / 100 files | {maintainability['finding_density_per_100_files']:.2f} |",
-        "",
-        "## Inputs",
-        "",
-        "- Coverage: `go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...`",
-        "- Complexity: `go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 0 .`",
-        "- Maintainability: `go run ./cmd/checktechdebt --format json --output technical-debt-report.json`",
-        "",
-        "## Highest Complexity Functions",
-        "",
-        "| Complexity | Package | Function | Location |",
-        "| ---: | --- | --- | --- |",
     ]
+
+    if build_performance is not None:
+        lines.extend(
+            [
+                f"| Build | Canonical server build duration | {format_duration(build_performance['duration_seconds'])} |",
+                f"| Build | Build exit code | {build_performance['exit_code']} |",
+                f"| Build | Build output size | {format_bytes(build_performance['output_size_bytes'])} |",
+            ]
+        )
+
+    if test_performance is not None:
+        lines.extend(
+            [
+                f"| Tests | Full-suite coverage test duration | {format_duration(test_performance['duration_seconds'])} |",
+                f"| Tests | Test exit code | {test_performance['exit_code']} |",
+                f"| Tests | Coverage profile size | {format_bytes(test_performance['coverage_profile_size_bytes'])} |",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Inputs",
+            "",
+            "- Coverage: `go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...`",
+            "- Complexity: `go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 0 .`",
+            "- Maintainability: `go run ./cmd/checktechdebt --format json --output technical-debt-report.json`",
+        ]
+    )
+
+    if build_performance is not None:
+        lines.append(f"- Build: `{table_escape(build_performance['command_display'])}`")
+    if test_performance is not None:
+        lines.append(f"- Test performance: `{table_escape(test_performance['command_display'])}`")
+
+    lines.extend([""])
+
+    if build_performance is not None:
+        lines.extend(
+            [
+                "## Build Performance",
+                "",
+                "| Metric | Value |",
+                "| --- | --- |",
+                f"| Command | `{table_escape(build_performance['command_display'])}` |",
+                f"| Duration | {format_duration(build_performance['duration_seconds'])} |",
+                f"| Started (UTC) | {table_escape(build_performance['started_at_utc'])} |",
+                f"| Finished (UTC) | {table_escape(build_performance['finished_at_utc'])} |",
+                f"| Output | `{table_escape(build_performance['output_path'])}` |",
+                f"| Output size | {format_bytes(build_performance['output_size_bytes'])} ({build_performance['output_size_bytes']} bytes) |",
+                "",
+            ]
+        )
+
+    if test_performance is not None:
+        lines.extend(
+            [
+                "## Test Performance",
+                "",
+                "| Metric | Value |",
+                "| --- | --- |",
+                f"| Command | `{table_escape(test_performance['command_display'])}` |",
+                f"| Duration | {format_duration(test_performance['duration_seconds'])} |",
+                f"| Started (UTC) | {table_escape(test_performance['started_at_utc'])} |",
+                f"| Finished (UTC) | {table_escape(test_performance['finished_at_utc'])} |",
+                f"| Coverage profile | `{table_escape(test_performance['coverage_profile_path'])}` |",
+                f"| Coverage profile present | {str(test_performance['coverage_profile_exists']).lower()} |",
+                f"| Coverage profile size | {format_bytes(test_performance['coverage_profile_size_bytes'])} ({test_performance['coverage_profile_size_bytes']} bytes) |",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## Highest Complexity Functions",
+            "",
+            "| Complexity | Package | Function | Location |",
+            "| ---: | --- | --- | --- |",
+        ]
+    )
 
     for item in complexity["top_functions"]:
         location = f"{item['path']}:{item['line']}:{item['column']}"
@@ -336,10 +512,18 @@ def main() -> int:
     coverage_path = Path(args.coverage)
     complexity_path = Path(args.complexity)
     tech_debt_path = Path(args.tech_debt)
+    build_performance_path = Path(args.build_performance) if args.build_performance else None
+    test_performance_path = Path(args.test_performance) if args.test_performance else None
     json_out = Path(args.json_out)
     md_out = Path(args.md_out)
 
-    report = build_report(coverage_path, complexity_path, tech_debt_path)
+    report = build_report(
+        coverage_path,
+        complexity_path,
+        tech_debt_path,
+        build_performance_path,
+        test_performance_path,
+    )
     markdown = render_markdown(report)
 
     json_out.parent.mkdir(parents=True, exist_ok=True)

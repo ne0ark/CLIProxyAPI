@@ -36,6 +36,40 @@ jobs:
       - name: Validate metrics helper
         run: python3 -m py_compile .github/scripts/code_quality_metrics.py
 
+      - name: Measure canonical build performance
+        run: |
+          python3 - <<'PY'
+          import json
+          import shlex
+          import subprocess
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          output_path = Path("test-output")
+          command = ["go", "build", "-o", str(output_path), "./cmd/server"]
+
+          started_at = datetime.now(timezone.utc)
+          start = time.perf_counter()
+          subprocess.run(command, check=True)
+          duration_seconds = round(time.perf_counter() - start, 3)
+          finished_at = datetime.now(timezone.utc)
+
+          payload = {
+              "command": command,
+              "command_display": shlex.join(command),
+              "started_at_utc": started_at.replace(microsecond=0).isoformat(),
+              "finished_at_utc": finished_at.replace(microsecond=0).isoformat(),
+              "duration_seconds": duration_seconds,
+              "exit_code": 0,
+              "output_path": output_path.as_posix(),
+              "output_size_bytes": output_path.stat().st_size,
+          }
+          Path("build-performance.json").write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
+
+          output_path.unlink()
+          PY
+
       - name: Generate technical debt report
         id: techdebt
         shell: bash
@@ -49,8 +83,48 @@ jobs:
           fi
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
 
-      - name: Generate coverage profile
-        run: go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+      - name: Generate coverage profile and test performance report
+        run: |
+          python3 - <<'PY'
+          import json
+          import shlex
+          import subprocess
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          coverage_profile = Path("coverage.out")
+          command = [
+              "go",
+              "test",
+              "-covermode=atomic",
+              "-coverpkg=./...",
+              "-coverprofile=coverage.out",
+              "./...",
+          ]
+
+          started_at = datetime.now(timezone.utc)
+          start = time.perf_counter()
+          completed = subprocess.run(command, check=False)
+          duration_seconds = round(time.perf_counter() - start, 3)
+          finished_at = datetime.now(timezone.utc)
+
+          payload = {
+              "command": command,
+              "command_display": shlex.join(command),
+              "started_at_utc": started_at.replace(microsecond=0).isoformat(),
+              "finished_at_utc": finished_at.replace(microsecond=0).isoformat(),
+              "duration_seconds": duration_seconds,
+              "exit_code": completed.returncode,
+              "coverage_profile_path": coverage_profile.as_posix(),
+              "coverage_profile_exists": coverage_profile.exists(),
+              "coverage_profile_size_bytes": coverage_profile.stat().st_size if coverage_profile.exists() else 0,
+          }
+          Path("test-performance.json").write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
+
+          if completed.returncode != 0:
+              raise SystemExit(completed.returncode)
+          PY
 
       - name: Generate cyclomatic complexity report
         run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 0 . > gocyclo-report.txt
@@ -61,6 +135,8 @@ jobs:
             --coverage coverage.out \
             --complexity gocyclo-report.txt \
             --tech-debt technical-debt-report.json \
+            --build-performance build-performance.json \
+            --test-performance test-performance.json \
             --json-out code-quality-metrics.json \
             --md-out code-quality-metrics.md
           cat code-quality-metrics.md >> "$GITHUB_STEP_SUMMARY"
@@ -73,6 +149,8 @@ jobs:
             coverage.out
             gocyclo-report.txt
             technical-debt-report.json
+            build-performance.json
+            test-performance.json
             code-quality-metrics.json
             code-quality-metrics.md
           if-no-files-found: error
