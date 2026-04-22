@@ -1,0 +1,108 @@
+name: automated-security-review
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  automated-security-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refresh models catalog
+        run: |
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate security review helper
+        run: python3 -m py_compile .github/scripts/security_review_summary.py
+
+      - name: Run govulncheck
+        id: govulncheck
+        shell: bash
+        run: |
+          set +e
+          go run golang.org/x/vuln/cmd/govulncheck@latest -json ./... > govulncheck.json
+          status=$?
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          if [ ! -s govulncheck.json ]; then
+            exit "$status"
+          fi
+
+      - name: Run gosec JSON export
+        id: gosec_json
+        shell: bash
+        run: |
+          set +e
+          go run github.com/securego/gosec/v2/cmd/gosec@latest -no-fail -fmt=json -out gosec-report.json ./...
+          status=$?
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          if [ ! -s gosec-report.json ]; then
+            exit "$status"
+          fi
+
+      - name: Run gosec SARIF export
+        id: gosec_sarif
+        shell: bash
+        run: |
+          set +e
+          go run github.com/securego/gosec/v2/cmd/gosec@latest -no-fail -fmt=sarif -out gosec.sarif ./...
+          status=$?
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          if [ ! -s gosec.sarif ]; then
+            exit "$status"
+          fi
+
+      - name: Build automated security review summary
+        run: |
+          python3 .github/scripts/security_review_summary.py \
+            --govulncheck govulncheck.json \
+            --govulncheck-exit-code "${{ steps.govulncheck.outputs.exit_code }}" \
+            --gosec gosec-report.json \
+            --gosec-exit-code "${{ steps.gosec_json.outputs.exit_code }}" \
+            --sarif gosec.sarif \
+            --sarif-exit-code "${{ steps.gosec_sarif.outputs.exit_code }}" \
+            --json-out automated-security-review.json \
+            --md-out automated-security-review.md
+          cat automated-security-review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload gosec SARIF to GitHub code scanning
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec.sarif
+
+      - name: Upload automated security review artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: automated-security-review
+          path: |
+            govulncheck.json
+            gosec-report.json
+            gosec.sarif
+            automated-security-review.json
+            automated-security-review.md
+          if-no-files-found: error
