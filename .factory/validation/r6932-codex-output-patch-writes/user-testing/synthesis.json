@@ -1,0 +1,24 @@
+{
+  "milestone": "r6932-codex-output-patch-writes",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 2,
+    "passed": 2,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-R6932-CODEX-001",
+    "VAL-R6932-CODEX-002"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [
+    {
+      "type": "equivalence_confirmation",
+      "summary": "Recorded milestone 3 as already satisfied locally by e78be8f1, so no runtime file edits were needed for the upstream perf slice."
+    }
+  ],
+  "previousRound": null
+}
