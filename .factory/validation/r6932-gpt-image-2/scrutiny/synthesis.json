@@ -1,0 +1,42 @@
+{
+  "milestone": "r6932-gpt-image-2",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "targeted": {
+      "passed": true,
+      "command": "go test ./internal/api ./sdk/api/handlers ./sdk/api/handlers/openai ./sdk/cliproxy/auth ./sdk/cliproxy ./internal/registry",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "go build -o test-output.exe ./cmd/server",
+      "exitCode": 0
+    },
+    "full": {
+      "passed": true,
+      "command": "go test ./...",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [
+    {
+      "type": "security_fix",
+      "summary": "Added image-route ACL enforcement for both requested image model and backing execution model, plus multipart size limits and cleanup."
+    },
+    {
+      "type": "correctness_fix",
+      "summary": "Separated requested image model metadata from execution model routing and fixed SSE frame buffering to preserve multi-frame responses."
+    }
+  ],
+  "suggestedGuidanceUpdates": [],
+  "rejectedObservations": [],
+  "previousRound": null
+}

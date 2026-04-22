@@ -64,6 +64,37 @@ func (e *authManagerNonStreamingTestExecutor) HttpRequest(context.Context, *core
 	return nil, nil
 }
 
+type authManagerStreamingTestExecutor struct {
+	lastStreamReq  coreexecutor.Request
+	lastStreamOpts coreexecutor.Options
+}
+
+func (e *authManagerStreamingTestExecutor) Identifier() string { return "openai" }
+
+func (e *authManagerStreamingTestExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (e *authManagerStreamingTestExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.lastStreamReq = req
+	e.lastStreamOpts = opts
+	chunks := make(chan coreexecutor.StreamChunk)
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *authManagerStreamingTestExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *authManagerStreamingTestExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (e *authManagerStreamingTestExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
 func TestExecuteNonStreamingWithAuthManager_SharedPath(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	const authID = "test-handlers-auth-manager-shared-path-auth"
@@ -171,5 +202,45 @@ func TestExecuteNonStreamingWithAuthManager_SharedPath(t *testing.T) {
 				t.Fatalf("requested model metadata = %v, want %q", got, "gemini-2.5-pro")
 			}
 		})
+	}
+}
+
+func TestExecuteStreamWithAuthManagerAllowImageModel_PreservesExecutionModel(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const authID = "test-handlers-auth-manager-image-route-auth"
+	modelRegistry.RegisterClient(authID, "openai", []*registry.ModelInfo{
+		{ID: "image-alias", DisplayName: "gpt-image-2", Created: time.Now().Unix()},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(authID)
+	})
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	executor := &authManagerStreamingTestExecutor{}
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       authID,
+		Provider: "openai",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	rawJSON := []byte(`{"model":"gpt-5.4-mini","tools":[{"model":"gpt-image-2"}]}`)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManagerAllowImageModel(context.Background(), "openai-response", "gpt-5.4-mini", "image-alias", rawJSON, "")
+	if dataChan == nil {
+		t.Fatalf("expected data channel, got nil")
+	}
+	for range dataChan {
+	}
+	for range errChan {
+	}
+
+	if executor.lastStreamReq.Model != "gpt-5.4-mini" {
+		t.Fatalf("stream request model = %q, want %q", executor.lastStreamReq.Model, "gpt-5.4-mini")
+	}
+	if got := executor.lastStreamOpts.Metadata[coreexecutor.RequestedModelMetadataKey]; got != "image-alias" {
+		t.Fatalf("requested model metadata = %v, want %q", got, "image-alias")
 	}
 }

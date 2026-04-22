@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -50,6 +51,7 @@ const idempotencyKeyMetadataKey = "idempotency_key"
 const (
 	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
+	imageOnlyModelID                 = "gpt-image-2"
 )
 
 type pinnedAuthContextKey struct{}
@@ -535,21 +537,33 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 // This path is the only supported execution route.
 // The returned http.Header carries upstream response headers captured before streaming begins.
 func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
+	return h.executeStreamWithAuthManager(ctx, handlerType, modelName, modelName, rawJSON, alt, false)
+}
+
+func (h *BaseAPIHandler) ExecuteStreamWithAuthManagerAllowImageModel(ctx context.Context, handlerType, executionModel, requestedModel string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	return h.executeStreamWithAuthManager(ctx, handlerType, executionModel, requestedModel, rawJSON, alt, true)
+}
+
+func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handlerType, executionModel, requestedModel string, rawJSON []byte, alt string, allowImageOnly bool) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	providers, normalizedRequestedModel, errMsg := h.getRequestDetailsWithOptions(requestedModel, allowImageOnly)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
 		return nil, nil, errChan
 	}
+	executionModel = strings.TrimSpace(executionModel)
+	if executionModel == "" {
+		executionModel = normalizedRequestedModel
+	}
 	reqMeta := requestExecutionMetadata(ctx)
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedRequestedModel
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
 	}
 	req := coreexecutor.Request{
-		Model:   normalizedModel,
+		Model:   executionModel,
 		Payload: payload,
 	}
 	opts := coreexecutor.Options{
@@ -561,7 +575,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	opts.Metadata = reqMeta
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
-		err = enrichAuthSelectionError(err, providers, normalizedModel)
+		err = enrichAuthSelectionError(err, providers, normalizedRequestedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		status := http.StatusInternalServerError
 		if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
@@ -671,7 +685,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 								chunks = retryResult.Chunks
 								continue outer
 							}
-							streamErr = enrichAuthSelectionError(retryErr, providers, normalizedModel)
+							streamErr = enrichAuthSelectionError(retryErr, providers, normalizedRequestedModel)
 						}
 					}
 
@@ -750,6 +764,10 @@ func statusFromError(err error) int {
 }
 
 func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	return h.getRequestDetailsWithOptions(modelName, false)
+}
+
+func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowImageOnly bool) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
 	initialSuffix := thinking.ParseSuffix(modelName)
 	resolvedModelName := util.ResolveAutoModel(modelName)
 	if initialSuffix.ModelName == "auto" {
@@ -761,6 +779,13 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
+
+	if !allowImageOnly && isImageOnlyModel(baseModel) {
+		return nil, "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusServiceUnavailable,
+			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", baseModel),
+		}
+	}
 
 	providers = util.GetProviderName(baseModel)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
@@ -779,6 +804,26 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func isImageOnlyModel(modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if strings.EqualFold(modelName, imageOnlyModelID) {
+		return true
+	}
+
+	info := registry.LookupModelInfo(modelName)
+	if info == nil {
+		return false
+	}
+
+	for _, candidate := range []string{info.ID, info.Name, info.Version, info.DisplayName} {
+		if strings.EqualFold(strings.TrimSpace(candidate), imageOnlyModelID) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func cloneBytes(src []byte) []byte {

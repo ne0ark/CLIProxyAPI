@@ -22,6 +22,10 @@ const modelACLPeekBytes int64 = 16 * 1024 // 16 KiB
 
 var errBodyTooLarge = errors.New("model_acl: request body exceeds cap")
 
+const imageRouteDefaultModel = "gpt-image-2"
+const imageRouteExecutionModel = "gpt-5.4-mini"
+const imageRouteMultipartMaxBytes int64 = 32 << 20
+
 // ModelACLMiddleware enforces per-key model allowlists for the routes it is
 // installed on. The config closure is resolved on every request so hot reloads
 // take effect immediately.
@@ -92,6 +96,17 @@ func ModelACLMiddleware(cfgFn func() *config.Config) gin.HandlerFunc {
 		}
 
 		if cfg.IsModelAllowedForKey(apiKey, model) {
+			if isImageRoute(c.Request.URL.Path) && !cfg.IsModelAllowedForKey(apiKey, imageRouteExecutionModel) {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error": gin.H{
+						"type":            "model_not_allowed_for_key",
+						"message":         "this api key is not permitted to use the backing model required for image routes",
+						"model":           imageRouteExecutionModel,
+						"requested_model": model,
+					},
+				})
+				return
+			}
 			c.Next()
 			return
 		}
@@ -111,6 +126,10 @@ func ModelACLMiddleware(cfgFn func() *config.Config) gin.HandlerFunc {
 func extractRequestedModel(c *gin.Context) (model string, found bool, err error) {
 	if c == nil || c.Request == nil {
 		return "", false, nil
+	}
+
+	if model, found, err = extractImageRouteModel(c); found || err != nil {
+		return model, found, err
 	}
 
 	if idx := strings.Index(c.Request.URL.Path, "/v1beta/models/"); idx >= 0 {
@@ -161,7 +180,17 @@ func extractRequestedModel(c *gin.Context) (model string, found bool, err error)
 
 	if bodyFullyRead {
 		c.Request.Body = io.NopCloser(bytes.NewReader(peek))
-		return extractModelFromBytes(peek)
+		model, found, err = extractModelFromBytes(peek)
+		if err != nil {
+			return "", false, err
+		}
+		if found {
+			return model, true, nil
+		}
+		if isImageRoute(c.Request.URL.Path) {
+			return imageRouteDefaultModel, true, nil
+		}
+		return "", false, nil
 	}
 
 	if model, found, _ := extractModelFromBytes(peek); found {
@@ -188,7 +217,52 @@ func extractRequestedModel(c *gin.Context) (model string, found bool, err error)
 	bodyBytes = append(bodyBytes, rest...)
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	return extractModelFromBytes(bodyBytes)
+	model, found, err = extractModelFromBytes(bodyBytes)
+	if err != nil {
+		return "", false, err
+	}
+	if found {
+		return model, true, nil
+	}
+	if isImageRoute(c.Request.URL.Path) {
+		return imageRouteDefaultModel, true, nil
+	}
+	return "", false, nil
+}
+
+func extractImageRouteModel(c *gin.Context) (model string, found bool, err error) {
+	if c == nil || c.Request == nil || !isImageRoute(c.Request.URL.Path) {
+		return "", false, nil
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Type")))
+	if strings.HasSuffix(c.Request.URL.Path, "/images/edits") && strings.HasPrefix(contentType, "multipart/form-data") {
+		if c.Request.ContentLength > imageRouteMultipartMaxBytes {
+			return "", false, errBodyTooLarge
+		}
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, imageRouteMultipartMaxBytes)
+		}
+		if err := c.Request.ParseMultipartForm(imageRouteMultipartMaxBytes); err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				return "", false, errBodyTooLarge
+			}
+			return "", false, err
+		}
+		model = strings.TrimSpace(c.Request.FormValue("model"))
+		if model == "" {
+			model = imageRouteDefaultModel
+		}
+		return model, true, nil
+	}
+
+	return "", false, nil
+}
+
+func isImageRoute(path string) bool {
+	path = strings.TrimSpace(path)
+	return strings.HasSuffix(path, "/v1/images/generations") || strings.HasSuffix(path, "/v1/images/edits")
 }
 
 func extractModelFromBytes(body []byte) (model string, found bool, err error) {

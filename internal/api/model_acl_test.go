@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +42,12 @@ func newTestRouter(cfg *config.Config, apiKey string) *gin.Engine {
 			return
 		}
 		c.Data(http.StatusOK, "application/json", body)
+	})
+	router.POST("/v1/images/generations", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	router.POST("/v1/images/edits", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 	router.POST("/v1beta/models/*action", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true, "path": c.Request.URL.Path})
@@ -233,6 +240,125 @@ func TestModelACLMiddleware_ExplicitEmptyPolicyUsesDenyAllDefault(t *testing.T) 
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestModelACLMiddleware_ImageGenerationDefaultModelRejected(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: []string{"sk-images"},
+			APIKeyPolicies: []config.APIKeyPolicy{
+				{Key: "sk-images", AllowedModels: []string{"gpt-4o*"}},
+			},
+		},
+	}
+	router := newTestRouter(cfg, "sk-images")
+
+	body, _ := json.Marshal(map[string]any{"prompt": "draw a cat"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), imageRouteDefaultModel) {
+		t.Fatalf("expected default image model in response, got %s", w.Body.String())
+	}
+}
+
+func TestModelACLMiddleware_MultipartImageEditModelRejected(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: []string{"sk-images"},
+			APIKeyPolicies: []config.APIKeyPolicy{
+				{Key: "sk-images", AllowedModels: []string{"gpt-4o*"}},
+			},
+		},
+	}
+	router := newTestRouter(cfg, "sk-images")
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("prompt", "edit this image"); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	if err := writer.WriteField("model", imageRouteDefaultModel); err != nil {
+		t.Fatalf("write model: %v", err)
+	}
+	fileWriter, err := writer.CreateFormFile("image", "image.png")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fileWriter.Write([]byte("fake-image")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), imageRouteDefaultModel) {
+		t.Fatalf("expected image model in response, got %s", w.Body.String())
+	}
+}
+
+func TestModelACLMiddleware_ImageRouteRequiresBackingExecutionModel(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: []string{"sk-images"},
+			APIKeyPolicies: []config.APIKeyPolicy{
+				{Key: "sk-images", AllowedModels: []string{imageRouteDefaultModel}},
+			},
+		},
+	}
+	router := newTestRouter(cfg, "sk-images")
+
+	body, _ := json.Marshal(map[string]any{"prompt": "draw a cat", "model": imageRouteDefaultModel})
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), imageRouteExecutionModel) {
+		t.Fatalf("expected backing model in response, got %s", w.Body.String())
+	}
+}
+
+func TestModelACLMiddleware_ImageRouteAllowsRequestedAndBackingModel(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: []string{"sk-images"},
+			APIKeyPolicies: []config.APIKeyPolicy{
+				{Key: "sk-images", AllowedModels: []string{imageRouteDefaultModel, imageRouteExecutionModel}},
+			},
+		},
+	}
+	router := newTestRouter(cfg, "sk-images")
+
+	body, _ := json.Marshal(map[string]any{"prompt": "draw a cat", "model": imageRouteDefaultModel})
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
