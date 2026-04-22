@@ -1,0 +1,78 @@
+name: code-quality-metrics
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  code-quality-metrics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refresh models catalog
+        run: |
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate metrics helper
+        run: python3 -m py_compile .github/scripts/code_quality_metrics.py
+
+      - name: Generate technical debt report
+        id: techdebt
+        shell: bash
+        run: |
+          set +e
+          go run ./cmd/checktechdebt --format json --output technical-debt-report.json
+          status=$?
+          set -e
+          if [ ! -f technical-debt-report.json ]; then
+            exit "$status"
+          fi
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Generate coverage profile
+        run: go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+
+      - name: Generate cyclomatic complexity report
+        run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 0 . > gocyclo-report.txt
+
+      - name: Build code quality metrics report
+        run: |
+          python3 .github/scripts/code_quality_metrics.py \
+            --coverage coverage.out \
+            --complexity gocyclo-report.txt \
+            --tech-debt technical-debt-report.json \
+            --json-out code-quality-metrics.json \
+            --md-out code-quality-metrics.md
+          cat code-quality-metrics.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload code quality metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-quality-metrics
+          path: |
+            coverage.out
+            gocyclo-report.txt
+            technical-debt-report.json
+            code-quality-metrics.json
+            code-quality-metrics.md
+          if-no-files-found: error
