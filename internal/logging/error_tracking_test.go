@@ -155,10 +155,10 @@ func TestConfigureErrorTrackingFlushesExistingClientBeforeReplacement(t *testing
 		t.Fatalf("failed to create existing sentry client: %v", err)
 	}
 
-	hub := sentry.CurrentHub()
+	hub := currentErrorTrackingHub()
 	hub.BindClient(client)
 	t.Cleanup(func() {
-		cleanupCurrentSentryClient()
+		cleanupErrorTrackingClient()
 	})
 
 	cfg := &config.Config{
@@ -174,12 +174,65 @@ func TestConfigureErrorTrackingFlushesExistingClientBeforeReplacement(t *testing
 		t.Fatalf("expected existing client to flush once before replacement, got %d", got)
 	}
 
-	currentClient := sentry.CurrentHub().Client()
+	currentClient := currentErrorTrackingHub().Client()
 	if currentClient == nil {
 		t.Fatal("expected a replacement sentry client to be bound")
 	}
 	if got := strings.TrimSpace(currentClient.Options().Dsn); got != cfg.Sentry.DSN {
 		t.Fatalf("expected replacement client DSN %q, got %q", cfg.Sentry.DSN, got)
+	}
+}
+
+func TestSentryEmbeddedHostIsolationConfigureErrorTracking(t *testing.T) {
+	hostTransport := &sentryTransportSpy{}
+	hostClient, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:       sentryTestDSN,
+		Transport: hostTransport,
+	})
+	if err != nil {
+		t.Fatalf("failed to create host sentry client: %v", err)
+	}
+
+	cleanupErrorTrackingClient()
+	sentry.CurrentHub().BindClient(hostClient)
+	t.Cleanup(func() {
+		cleanupErrorTrackingClient()
+		cleanupCurrentSentryClient()
+	})
+
+	enabledCfg := &config.Config{
+		Sentry: config.SentryConfig{
+			DSN: "https://public@example.com/embedded",
+		},
+	}
+	if err := ConfigureErrorTracking(enabledCfg); err != nil {
+		t.Fatalf("ConfigureErrorTracking returned error: %v", err)
+	}
+
+	if got := sentry.CurrentHub().Client(); got != hostClient {
+		t.Fatal("expected embedded configuration to leave the host sentry client bound globally")
+	}
+
+	errorTrackingClient := currentErrorTrackingHub().Client()
+	if errorTrackingClient == nil {
+		t.Fatal("expected dedicated CLIProxyAPI sentry client to be bound")
+	}
+	if errorTrackingClient == hostClient {
+		t.Fatal("expected CLIProxyAPI to use a dedicated sentry client instead of the host client")
+	}
+
+	if err := ConfigureErrorTracking(&config.Config{}); err != nil {
+		t.Fatalf("ConfigureErrorTracking disable returned error: %v", err)
+	}
+
+	if got := sentry.CurrentHub().Client(); got != hostClient {
+		t.Fatal("expected disabling CLIProxyAPI error tracking to keep the host sentry client bound globally")
+	}
+	if currentErrorTrackingHub().Client() != nil {
+		t.Fatal("expected dedicated CLIProxyAPI sentry client to be cleared when disabled")
+	}
+	if got := hostTransport.FlushCalls(); got != 0 {
+		t.Fatalf("expected host sentry client to remain untouched, got %d flush calls", got)
 	}
 }
 
@@ -202,7 +255,9 @@ func captureSentryEvents(t *testing.T) func() []*sentry.Event {
 		events []*sentry.Event
 	)
 
-	err := sentry.Init(sentry.ClientOptions{
+	cleanupErrorTrackingClient()
+
+	client, err := sentry.NewClient(sentry.ClientOptions{
 		Dsn:              sentryTestDSN,
 		AttachStacktrace: true,
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
@@ -214,11 +269,12 @@ func captureSentryEvents(t *testing.T) func() []*sentry.Event {
 		},
 	})
 	if err != nil {
-		t.Fatalf("failed to initialize sentry for test: %v", err)
+		t.Fatalf("failed to initialize sentry client for test: %v", err)
 	}
+	currentErrorTrackingHub().BindClient(client)
 
 	t.Cleanup(func() {
-		cleanupCurrentSentryClient()
+		cleanupErrorTrackingClient()
 	})
 
 	return func() []*sentry.Event {
@@ -229,12 +285,23 @@ func captureSentryEvents(t *testing.T) func() []*sentry.Event {
 }
 
 func cleanupCurrentSentryClient() {
-	client := sentry.CurrentHub().Client()
+	cleanupSentryHubClient(sentry.CurrentHub())
+}
+
+func cleanupErrorTrackingClient() {
+	cleanupSentryHubClient(currentErrorTrackingHub())
+}
+
+func cleanupSentryHubClient(hub *sentry.Hub) {
+	if hub == nil {
+		return
+	}
+	client := hub.Client()
 	if client != nil {
 		client.Flush(200 * time.Millisecond)
 		client.Close()
 	}
-	sentry.CurrentHub().BindClient(nil)
+	hub.BindClient(nil)
 }
 
 type sentryTransportSpy struct {

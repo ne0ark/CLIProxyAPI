@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -23,9 +24,21 @@ const (
 	serverErrorCaptureMessage = "request completed with server error"
 )
 
+var (
+	errorTrackingHubMu sync.Mutex
+	errorTrackingHub   = sentry.NewHub(nil, sentry.NewScope())
+)
+
+func currentErrorTrackingHub() *sentry.Hub {
+	return errorTrackingHub
+}
+
 // ConfigureErrorTracking initializes contextual Sentry error tracking for the current configuration.
 func ConfigureErrorTracking(cfg *config.Config) error {
-	hub := sentry.CurrentHub()
+	errorTrackingHubMu.Lock()
+	defer errorTrackingHubMu.Unlock()
+
+	hub := currentErrorTrackingHub()
 	currentClient := hub.Client()
 
 	dsn := ""
@@ -67,7 +80,7 @@ func ConfigureErrorTracking(cfg *config.Config) error {
 
 // FlushErrorTracking flushes pending Sentry events.
 func FlushErrorTracking(timeout time.Duration) bool {
-	return flushSentryClient(sentry.CurrentHub().Client(), timeout)
+	return flushSentryClient(currentErrorTrackingHub().Client(), timeout)
 }
 
 func flushSentryClient(client *sentry.Client, timeout time.Duration) bool {
@@ -82,11 +95,16 @@ func flushSentryClient(client *sentry.Client, timeout time.Duration) bool {
 
 // GinSentryMiddleware installs the Sentry Gin integration so panics are captured with request scope.
 func GinSentryMiddleware() gin.HandlerFunc {
-	return sentrygin.New(sentrygin.Options{
+	middleware := sentrygin.New(sentrygin.Options{
 		Repanic:         true,
 		WaitForDelivery: false,
 		Timeout:         defaultSentryFlushTimeout,
 	})
+	return func(c *gin.Context) {
+		requestHub := currentErrorTrackingHub().Clone()
+		c.Request = c.Request.WithContext(sentry.SetHubOnContext(c.Request.Context(), requestHub))
+		middleware(c)
+	}
 }
 
 // GinSentryContext enriches each request-scoped Sentry hub with request metadata and 5xx capture.
