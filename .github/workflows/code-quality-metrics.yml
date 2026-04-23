@@ -14,6 +14,7 @@ jobs:
   code-quality-metrics:
     runs-on: ubuntu-latest
     env:
+      COVERAGE_THRESHOLD_PERCENT: "1.20"
       FLAKY_TEST_REPEAT_COUNT: "5"
     steps:
       - name: Checkout
@@ -153,6 +154,7 @@ jobs:
             --build-performance build-performance.json \
             --test-performance test-performance.json \
             --flaky-test-report flaky-test-detection.json \
+            --coverage-threshold "${COVERAGE_THRESHOLD_PERCENT}" \
             --json-out code-quality-metrics.json \
             --md-out code-quality-metrics.md
           cat code-quality-metrics.md >> "$GITHUB_STEP_SUMMARY"
@@ -173,3 +175,31 @@ jobs:
             code-quality-metrics.json
             code-quality-metrics.md
           if-no-files-found: error
+
+      - name: Enforce minimum coverage threshold
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("code-quality-metrics.json").read_text(encoding="utf-8"))
+          summary = report.get("summary") or {}
+
+          threshold = summary.get("coverage_threshold_percent")
+          actual = summary.get("coverage_percent")
+          passed = summary.get("coverage_threshold_passed")
+
+          if threshold is None:
+              raise SystemExit("coverage threshold is missing from code-quality-metrics.json")
+          if actual is None:
+              raise SystemExit("coverage percent is missing from code-quality-metrics.json")
+          if passed is None:
+              raise SystemExit("coverage threshold result is missing from code-quality-metrics.json")
+
+          if not passed:
+              raise SystemExit(
+                  f"coverage threshold failed: actual {actual:.2f}% is below required {threshold:.2f}%"
+              )
+
+          print(f"coverage threshold passed: actual {actual:.2f}% >= required {threshold:.2f}%")
+          PY

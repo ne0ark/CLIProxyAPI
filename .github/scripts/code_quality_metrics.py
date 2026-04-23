@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-performance", help="Path to canonical build performance JSON output")
     parser.add_argument("--test-performance", help="Path to full-suite test performance JSON output")
     parser.add_argument("--flaky-test-report", help="Path to flaky test detection JSON output")
+    parser.add_argument(
+        "--coverage-threshold",
+        type=float,
+        help="Minimum overall statement coverage percentage required for the coverage gate",
+    )
     parser.add_argument("--json-out", required=True, help="Path to the generated JSON report")
     parser.add_argument("--md-out", required=True, help="Path to the generated Markdown report")
     return parser.parse_args()
@@ -308,6 +313,24 @@ def parse_flaky_test_report(path: Path) -> dict[str, Any]:
     }
 
 
+def build_coverage_gate(coverage_percent: float, threshold_percent: float | None) -> dict[str, Any] | None:
+    if threshold_percent is None:
+        return None
+
+    threshold = round(float(threshold_percent), 2)
+    actual = round(float(coverage_percent), 2)
+    passed = actual >= threshold
+
+    return {
+        "threshold_percent": threshold,
+        "actual_percent": actual,
+        "passed": passed,
+        "status": "pass" if passed else "fail",
+        "shortfall_percent": round(max(threshold - actual, 0.0), 2),
+        "surplus_percent": round(max(actual - threshold, 0.0), 2),
+    }
+
+
 def build_report(
     coverage_path: Path,
     complexity_path: Path,
@@ -315,6 +338,7 @@ def build_report(
     build_performance_path: Path | None = None,
     test_performance_path: Path | None = None,
     flaky_test_report_path: Path | None = None,
+    coverage_threshold: float | None = None,
 ) -> dict[str, Any]:
     coverage = parse_coverage(coverage_path)
     complexity = parse_complexity(complexity_path)
@@ -328,6 +352,7 @@ def build_report(
     flaky_test_report = (
         parse_flaky_test_report(flaky_test_report_path) if flaky_test_report_path is not None else None
     )
+    coverage_gate = build_coverage_gate(coverage["percent"], coverage_threshold)
 
     summary = {
         "coverage_percent": coverage["percent"],
@@ -336,6 +361,16 @@ def build_report(
         "technical_debt_findings": maintainability["technical_debt_findings"],
         "technical_debt_clean": maintainability["technical_debt_findings"] == 0,
     }
+    if coverage_gate is not None:
+        summary.update(
+            {
+                "coverage_threshold_percent": coverage_gate["threshold_percent"],
+                "coverage_threshold_passed": coverage_gate["passed"],
+                "coverage_threshold_status": coverage_gate["status"],
+                "coverage_threshold_shortfall_percent": coverage_gate["shortfall_percent"],
+                "coverage_threshold_surplus_percent": coverage_gate["surplus_percent"],
+            }
+        )
     if build_performance is not None:
         summary.update(
             {
@@ -374,9 +409,13 @@ def build_report(
             "build_performance": str(build_performance_path) if build_performance_path is not None else None,
             "test_performance": str(test_performance_path) if test_performance_path is not None else None,
             "flaky_test_report": str(flaky_test_report_path) if flaky_test_report_path is not None else None,
+            "coverage_threshold_percent": round(float(coverage_threshold), 2)
+            if coverage_threshold is not None
+            else None,
         },
         "summary": summary,
         "coverage": coverage,
+        "coverage_gate": coverage_gate,
         "complexity": complexity,
         "maintainability": maintainability,
         "build_performance": build_performance,
@@ -391,6 +430,7 @@ def table_escape(value: Any) -> str:
 
 def render_markdown(report: dict[str, Any]) -> str:
     coverage = report["coverage"]
+    coverage_gate = report.get("coverage_gate")
     complexity = report["complexity"]
     maintainability = report["maintainability"]
     build_performance = report.get("build_performance")
@@ -411,6 +451,18 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| Coverage | Statement coverage | {coverage['percent']:.2f}% |",
         f"| Coverage | Covered statements | {coverage['covered_statements']} / {coverage['total_statements']} |",
         f"| Coverage | Files in profile | {coverage['files']} |",
+    ]
+
+    if coverage_gate is not None:
+        lines.extend(
+            [
+                f"| Coverage gate | Minimum overall coverage threshold | {coverage_gate['threshold_percent']:.2f}% |",
+                f"| Coverage gate | Threshold result | {coverage_gate['status']} |",
+            ]
+        )
+
+    lines.extend(
+        [
         f"| Complexity | Functions analyzed | {complexity['functions']} |",
         f"| Complexity | Average cyclomatic complexity | {complexity['average_cyclomatic_complexity']:.2f} |",
         f"| Complexity | Max cyclomatic complexity | {complexity['max_cyclomatic_complexity']} |",
@@ -421,7 +473,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| Maintainability | Impacted files | {maintainability['impacted_files']} |",
         f"| Maintainability | Debt-free scan rate | {maintainability['debt_free_rate']:.2f}% |",
         f"| Maintainability | Finding density / 100 files | {maintainability['finding_density_per_100_files']:.2f} |",
-    ]
+        ]
+    )
 
     if build_performance is not None:
         lines.extend(
@@ -461,6 +514,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         ]
     )
 
+    if coverage_gate is not None:
+        lines.append(f"- Coverage gate: minimum overall statement coverage of `{coverage_gate['threshold_percent']:.2f}%`")
     if build_performance is not None:
         lines.append(f"- Build: `{table_escape(build_performance['command_display'])}`")
     if test_performance is not None:
@@ -471,6 +526,24 @@ def render_markdown(report: dict[str, Any]) -> str:
         )
 
     lines.extend([""])
+
+    if coverage_gate is not None:
+        margin = coverage_gate["surplus_percent"] if coverage_gate["passed"] else coverage_gate["shortfall_percent"]
+        direction = "+" if coverage_gate["passed"] else "-"
+        lines.extend(
+            [
+                "## Coverage Gate",
+                "",
+                "| Metric | Value |",
+                "| --- | --- |",
+                f"| Minimum overall coverage threshold | {coverage_gate['threshold_percent']:.2f}% |",
+                f"| Actual statement coverage | {coverage_gate['actual_percent']:.2f}% |",
+                f"| Threshold met | {str(coverage_gate['passed']).lower()} |",
+                f"| Status | {coverage_gate['status']} |",
+                f"| Margin vs threshold | {direction}{margin:.2f} percentage points |",
+                "",
+            ]
+        )
 
     if build_performance is not None:
         lines.extend(
@@ -633,6 +706,7 @@ def main() -> int:
         build_performance_path,
         test_performance_path,
         flaky_test_report_path,
+        args.coverage_threshold,
     )
     markdown = render_markdown(report)
 
