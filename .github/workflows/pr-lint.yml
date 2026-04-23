@@ -30,14 +30,14 @@ jobs:
       - name: Run gocyclo on watcher diff
         run: go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 13 ./internal/watcher/diff
       - name: Run scoped dupl on sdk/api/handlers
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.64.8
+          version: v2.11.0
           args: --config .golangci.dupl-sdk-api-handlers.yml ./sdk/api/handlers/...
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.64.8
+          version: v2.11.0
           args: --timeout 10m
       - name: Upload technical debt report
         if: always()
