@@ -125,6 +125,9 @@ type Server struct {
 	// engine is the Gin web framework engine instance.
 	engine *gin.Engine
 
+	// metrics exposes Prometheus metrics for the HTTP server.
+	metrics *serverMetrics
+
 	// server is the underlying HTTP server.
 	server *http.Server
 
@@ -201,16 +204,23 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	if err := logging.ConfigureErrorTracking(cfg); err != nil {
+		log.WithError(err).Warn("failed to initialize sentry error tracking")
+	}
 
 	// Create gin engine
 	engine := gin.New()
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
+	metrics := newServerMetrics()
 
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+	engine.Use(logging.GinSentryMiddleware())
+	engine.Use(logging.GinSentryContext())
+	engine.Use(metrics.Middleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -244,6 +254,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Create server instance
 	s := &Server{
 		engine:              engine,
+		metrics:             metrics,
 		handlers:            handlers.NewBaseAPIHandlers(&cfg.SDKConfig, authManager),
 		cfg:                 cfg,
 		accessManager:       accessManager,
@@ -332,6 +343,11 @@ func (s *Server) setupRoutes() {
 	}
 	s.engine.GET("/healthz", healthzHandler)
 	s.engine.HEAD("/healthz", healthzHandler)
+	if s.metrics != nil {
+		metricsHandler := gin.WrapH(s.metrics.Handler())
+		s.engine.GET("/metrics", metricsHandler)
+		s.engine.HEAD("/metrics", metricsHandler)
+	}
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
@@ -838,6 +854,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
 	}
+	logging.FlushErrorTracking(2 * time.Second)
 
 	log.Debug("API server stopped")
 	return nil
@@ -901,6 +918,11 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if oldCfg == nil || oldCfg.LoggingToFile != cfg.LoggingToFile || oldCfg.LogsMaxTotalSizeMB != cfg.LogsMaxTotalSizeMB {
 		if err := logging.ConfigureLogOutput(cfg); err != nil {
 			log.Errorf("failed to reconfigure log output: %v", err)
+		}
+	}
+	if oldCfg == nil || !reflect.DeepEqual(oldCfg.Sentry, cfg.Sentry) {
+		if err := logging.ConfigureErrorTracking(cfg); err != nil {
+			log.Errorf("failed to reconfigure sentry error tracking: %v", err)
 		}
 	}
 
@@ -1047,6 +1069,7 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)
 				}
+				logging.SetSentryUserContext(c)
 			}
 			c.Next()
 			return

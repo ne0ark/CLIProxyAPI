@@ -62,6 +62,9 @@ type Config struct {
 	// When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 	ErrorLogsMaxFiles int `yaml:"error-logs-max-files" json:"error-logs-max-files"`
 
+	// Sentry configures optional contextual error tracking.
+	Sentry SentryConfig `yaml:"sentry,omitempty" json:"sentry,omitempty"`
+
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
@@ -180,6 +183,24 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+}
+
+// SentryConfig holds contextual error-tracking settings.
+type SentryConfig struct {
+	// DSN is the Sentry project DSN. Leave empty to disable error tracking.
+	DSN string `yaml:"dsn,omitempty" json:"dsn,omitempty"`
+	// Environment tags events with the active deployment environment.
+	Environment string `yaml:"environment,omitempty" json:"environment,omitempty"`
+	// Release tags events with the running build identifier.
+	Release string `yaml:"release,omitempty" json:"release,omitempty"`
+	// SampleRate controls the fraction of error events sent to Sentry.
+	// When unset or invalid, it defaults to 1.0.
+	SampleRate float64 `yaml:"sample-rate,omitempty" json:"sample-rate,omitempty"`
+	// AttachStacktrace attaches a stack trace to captured messages when supported.
+	// Defaults to true when unset.
+	AttachStacktrace *bool `yaml:"attach-stacktrace,omitempty" json:"attach-stacktrace,omitempty"`
+	// Debug enables verbose SDK diagnostics.
+	Debug bool `yaml:"debug,omitempty" json:"debug,omitempty"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
