@@ -3,10 +3,14 @@ package registry
 import "testing"
 
 func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
+	t.Run("free", func(t *testing.T) {
+		model := findModelInfo(GetCodexFreeModels(), "gpt-5.5")
+		if model != nil {
+			t.Fatalf("expected free source to omit gpt-5.5")
+		}
+	})
+
 	modelSources := map[string]func() *ModelInfo{
-		"free": func() *ModelInfo {
-			return findModelInfo(GetCodexFreeModels(), "gpt-5.5")
-		},
 		"team": func() *ModelInfo {
 			return findModelInfo(GetCodexTeamModels(), "gpt-5.5")
 		},
@@ -21,7 +25,7 @@ func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 		},
 	}
 
-	for _, source := range []string{"free", "team", "plus", "pro", "lookup"} {
+	for _, source := range []string{"team", "plus", "pro", "lookup"} {
 		source := source
 		t.Run(source, func(t *testing.T) {
 			model := modelSources[source]()
