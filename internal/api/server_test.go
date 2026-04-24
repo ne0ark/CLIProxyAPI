@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
@@ -112,6 +113,68 @@ func TestHealthz(t *testing.T) {
 			t.Fatalf("expected empty body for HEAD request, got %q", rr.Body.String())
 		}
 	})
+}
+
+func TestMetricsInstrumentationTracksRequests(t *testing.T) {
+	server := newTestServer(t)
+	if server.metrics == nil {
+		t.Fatal("expected metrics registry to be initialized")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	requestCount := promtestutil.ToFloat64(server.metrics.requestsTotal.WithLabelValues(http.MethodGet, "/healthz", "200"))
+	if requestCount != 1 {
+		t.Fatalf("expected /healthz request counter to be 1, got %v", requestCount)
+	}
+
+	if inFlight := promtestutil.ToFloat64(server.metrics.inFlight); inFlight != 0 {
+		t.Fatalf("expected in-flight requests gauge to return to 0, got %v", inFlight)
+	}
+
+	if observed := promtestutil.CollectAndCount(server.metrics.requestDuration); observed == 0 {
+		t.Fatal("expected request duration histogram to record at least one metric")
+	}
+}
+
+func TestMetricsEndpointExposesPrometheusMetrics(t *testing.T) {
+	server := newTestServer(t)
+
+	seedReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	seedResp := httptest.NewRecorder()
+	server.engine.ServeHTTP(seedResp, seedReq)
+	if seedResp.Code != http.StatusOK {
+		t.Fatalf("failed to seed request metrics: status=%d body=%s", seedResp.Code, seedResp.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if contentType := rr.Header().Get("Content-Type"); !strings.Contains(contentType, "text/plain") {
+		t.Fatalf("unexpected content type for /metrics: %q", contentType)
+	}
+
+	body := rr.Body.String()
+	for _, want := range []string{
+		"cliproxyapi_http_requests_total",
+		`route="/healthz"`,
+		"go_goroutines",
+		"promhttp_metric_handler_requests_total",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected /metrics response to contain %q, body=%s", want, body)
+		}
+	}
 }
 
 func TestServer_ModelACLRejectsRestrictedKeysOnShippedRoutes(t *testing.T) {
