@@ -1,0 +1,35 @@
+name: generated-openapi-reference
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-reference-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate OpenAPI reference docs
+        run: go run ./cmd/generate-openapi-docs
+
+      - name: Upload generated OpenAPI reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-reference-docs
+          path: docs/generated/openapi-reference.md
+          if-no-files-found: error

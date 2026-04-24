@@ -27,6 +27,8 @@ auths/*
 
 # Documentation
 docs/*
+!docs/generated/
+!docs/generated/**
 !docs/wiki/
 !docs/wiki/**
 AGENTS.md
