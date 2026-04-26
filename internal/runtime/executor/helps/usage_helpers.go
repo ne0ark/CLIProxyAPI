@@ -330,12 +330,25 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 	return detail
 }
 
-func ParseGeminiCLIUsage(data []byte) usage.Detail {
-	usageNode := gjson.ParseBytes(data)
-	node := usageNode.Get("response.usageMetadata")
-	if !node.Exists() {
-		node = usageNode.Get("response.usage_metadata")
+// findGeminiCLIUsageNode searches for Gemini CLI usage metadata in both
+// response-wrapped and root-level payloads, accepting camelCase and snake_case
+// path variants.
+func findGeminiCLIUsageNode(root gjson.Result) gjson.Result {
+	for _, path := range []string{
+		"response.usageMetadata",
+		"response.usage_metadata",
+		"usageMetadata",
+		"usage_metadata",
+	} {
+		if node := root.Get(path); node.Exists() {
+			return node
+		}
 	}
+	return gjson.Result{}
+}
+
+func ParseGeminiCLIUsage(data []byte) usage.Detail {
+	node := findGeminiCLIUsageNode(gjson.ParseBytes(data))
 	if !node.Exists() {
 		return usage.Detail{}
 	}
@@ -374,10 +387,7 @@ func ParseGeminiCLIStreamUsage(line []byte) (usage.Detail, bool) {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return usage.Detail{}, false
 	}
-	node := gjson.GetBytes(payload, "response.usageMetadata")
-	if !node.Exists() {
-		node = gjson.GetBytes(payload, "usage_metadata")
-	}
+	node := findGeminiCLIUsageNode(gjson.ParseBytes(payload))
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}

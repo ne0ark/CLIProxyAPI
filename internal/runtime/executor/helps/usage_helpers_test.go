@@ -117,6 +117,70 @@ func TestParseOpenAIStreamUsageZeroUsageObjectIgnored(t *testing.T) {
 	}
 }
 
+func TestParseGeminiCLIUsageAcceptsAllSupportedPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "response camelCase",
+			data: `{"response":{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}}`,
+		},
+		{
+			name: "response snake_case",
+			data: `{"response":{"usage_metadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}}`,
+		},
+		{
+			name: "root camelCase",
+			data: `{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}`,
+		},
+		{
+			name: "root snake_case",
+			data: `{"usage_metadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertGeminiUsageDetail(t, ParseGeminiCLIUsage([]byte(tc.data)))
+		})
+	}
+}
+
+func TestParseGeminiCLIStreamUsageAcceptsAllSupportedPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "response camelCase",
+			line: `data: {"response":{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}}`,
+		},
+		{
+			name: "response snake_case",
+			line: `data: {"response":{"usage_metadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}}`,
+		},
+		{
+			name: "root camelCase",
+			line: `data: {"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}`,
+		},
+		{
+			name: "root snake_case",
+			line: `data: {"usage_metadata":{"promptTokenCount":11,"candidatesTokenCount":7,"thoughtsTokenCount":5,"totalTokenCount":24,"cachedContentTokenCount":3}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			detail, ok := ParseGeminiCLIStreamUsage([]byte(tc.line))
+			if !ok {
+				t.Fatal("expected usage to be parsed")
+			}
+			assertGeminiUsageDetail(t, detail)
+		})
+	}
+}
+
 func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	reporter := &UsageReporter{
 		provider:    "openai",
@@ -130,5 +194,25 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
+	}
+}
+
+func assertGeminiUsageDetail(t *testing.T, detail usage.Detail) {
+	t.Helper()
+
+	if detail.InputTokens != 11 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 11)
+	}
+	if detail.OutputTokens != 7 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 7)
+	}
+	if detail.ReasoningTokens != 5 {
+		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 5)
+	}
+	if detail.TotalTokens != 24 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 24)
+	}
+	if detail.CachedTokens != 3 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 3)
 	}
 }
