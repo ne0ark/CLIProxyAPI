@@ -22,3 +22,8 @@ func shouldSkipPersist(ctx context.Context) bool {
 	enabled, ok := v.(bool)
 	return ok && enabled
 }
+
+// IsSkipPersist reports whether persistence is disabled for this context.
+func IsSkipPersist(ctx context.Context) bool {
+	return shouldSkipPersist(ctx)
+}
