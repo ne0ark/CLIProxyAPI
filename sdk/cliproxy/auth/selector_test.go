@@ -1002,6 +1002,42 @@ func TestExtractSessionID_Headers(t *testing.T) {
 	}
 }
 
+func TestExtractSessionID_AmpThreadId(t *testing.T) {
+	t.Parallel()
+
+	headers := make(http.Header)
+	headers.Set("X-Amp-Thread-Id", "T-7873e6bd-6354-4a9a-be2c-c7702c6e1b64")
+
+	got := ExtractSessionID(headers, nil, nil)
+	want := "amp:T-7873e6bd-6354-4a9a-be2c-c7702c6e1b64"
+	if got != want {
+		t.Errorf("ExtractSessionID() with X-Amp-Thread-Id = %q, want %q", got, want)
+	}
+}
+
+func TestExtractSessionID_AmpThreadIdPriority(t *testing.T) {
+	t.Parallel()
+
+	headers := make(http.Header)
+	headers.Set("X-Amp-Thread-Id", "T-priority-test")
+
+	payload := []byte(`{"conversation_id":"conv-12345"}`)
+	got := ExtractSessionID(headers, payload, nil)
+	want := "amp:T-priority-test"
+	if got != want {
+		t.Errorf("ExtractSessionID() = %q, want %q (Amp thread ID should take priority over conversation_id)", got, want)
+	}
+
+	headers2 := make(http.Header)
+	headers2.Set("X-Amp-Thread-Id", "T-priority-test")
+	payload2 := []byte(`{"metadata":{"user_id":"user_xxx_account__session_ac980658-63bd-4fb3-97ba-8da64cb1e344"}}`)
+	got2 := ExtractSessionID(headers2, payload2, nil)
+	want2 := "claude:ac980658-63bd-4fb3-97ba-8da64cb1e344"
+	if got2 != want2 {
+		t.Errorf("ExtractSessionID() = %q, want %q (Claude Code should take priority over Amp thread ID)", got2, want2)
+	}
+}
+
 // TestExtractSessionID_IdempotencyKey verifies that idempotency_key is intentionally
 // ignored for session affinity (it's auto-generated per-request, causing cache misses).
 func TestExtractSessionID_IdempotencyKey(t *testing.T) {
@@ -1297,6 +1333,47 @@ func TestSessionAffinitySelector_ThreeScenarios(t *testing.T) {
 			t.Errorf("Scenario2 should inherit Scenario1 binding: got %s vs %s", picked1.ID, picked2.ID)
 		}
 	})
+}
+
+func TestSessionAffinitySelector_AmpThreadIdInheritsConversationBinding(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a"},
+		{ID: "auth-b"},
+	}
+
+	firstOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"conversation_id":"conv-12345"}`),
+	}
+	first, err := selector.Pick(context.Background(), "amp", "model", firstOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() initial conversation binding error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("Pick() initial conversation binding returned nil auth")
+	}
+
+	secondOpts := cliproxyexecutor.Options{
+		Headers:         http.Header{"X-Amp-Thread-Id": []string{"T-conv-12345"}},
+		OriginalRequest: []byte(`{"conversation_id":"conv-12345"}`),
+	}
+	second, err := selector.Pick(context.Background(), "amp", "model", secondOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() amp header inheritance error = %v", err)
+	}
+	if second == nil {
+		t.Fatal("Pick() amp header inheritance returned nil auth")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("Amp thread ID should inherit conversation binding: got %s want %s", second.ID, first.ID)
+	}
 }
 
 func TestSessionAffinitySelector_MultiModelSession(t *testing.T) {

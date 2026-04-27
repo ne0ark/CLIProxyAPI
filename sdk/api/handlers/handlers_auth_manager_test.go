@@ -3,9 +3,11 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -93,6 +95,17 @@ func (e *authManagerStreamingTestExecutor) CountTokens(context.Context, *coreaut
 
 func (e *authManagerStreamingTestExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
 	return nil, nil
+}
+
+func authManagerRequestContextWithHeaders(headers http.Header) context.Context {
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if headers != nil {
+		req.Header = headers.Clone()
+	}
+	ginCtx.Request = req
+	return context.WithValue(context.Background(), "gin", ginCtx)
 }
 
 func TestExecuteNonStreamingWithAuthManager_SharedPath(t *testing.T) {
@@ -205,6 +218,66 @@ func TestExecuteNonStreamingWithAuthManager_SharedPath(t *testing.T) {
 	}
 }
 
+func TestExecuteNonStreamingWithAuthManager_ForwardsRequestHeaders(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const authID = "test-handlers-auth-manager-forward-headers-auth"
+	modelRegistry.RegisterClient(authID, "gemini", []*registry.ModelInfo{
+		{ID: "gemini-2.5-pro", Created: time.Now().Unix()},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(authID)
+	})
+
+	headers := http.Header{"X-Amp-Thread-Id": []string{"T-forwarded-header"}}
+	ctx := authManagerRequestContextWithHeaders(headers)
+	rawJSON := []byte(`{"model":"gemini-2.5-pro","contents":[]}`)
+
+	tests := []struct {
+		name         string
+		call         func(*BaseAPIHandler, context.Context, string, string, []byte, string) ([]byte, http.Header, *interfaces.ErrorMessage)
+		capturedOpts func(*authManagerNonStreamingTestExecutor) coreexecutor.Options
+	}{
+		{
+			name: "execute",
+			call: (*BaseAPIHandler).ExecuteWithAuthManager,
+			capturedOpts: func(executor *authManagerNonStreamingTestExecutor) coreexecutor.Options {
+				return executor.lastExecuteOpts
+			},
+		},
+		{
+			name: "count",
+			call: (*BaseAPIHandler).ExecuteCountWithAuthManager,
+			capturedOpts: func(executor *authManagerNonStreamingTestExecutor) coreexecutor.Options {
+				return executor.lastCountOpts
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := coreauth.NewManager(nil, nil, nil)
+			executor := &authManagerNonStreamingTestExecutor{}
+			manager.RegisterExecutor(executor)
+			if _, err := manager.Register(context.Background(), &coreauth.Auth{
+				ID:       authID,
+				Provider: "gemini",
+			}); err != nil {
+				t.Fatalf("Register() error = %v", err)
+			}
+
+			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+			if _, _, errMsg := tt.call(handler, ctx, "openai", "gemini-2.5-pro", rawJSON, ""); errMsg != nil {
+				t.Fatalf("auth-manager execution error = %v", errMsg.Error)
+			}
+
+			opts := tt.capturedOpts(executor)
+			if got := opts.Headers.Get("X-Amp-Thread-Id"); got != "T-forwarded-header" {
+				t.Fatalf("opts.Headers X-Amp-Thread-Id = %q, want %q", got, "T-forwarded-header")
+			}
+		})
+	}
+}
+
 func TestExecuteStreamWithAuthManagerAllowImageModel_PreservesExecutionModel(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	const authID = "test-handlers-auth-manager-image-route-auth"
@@ -242,5 +315,43 @@ func TestExecuteStreamWithAuthManagerAllowImageModel_PreservesExecutionModel(t *
 	}
 	if got := executor.lastStreamOpts.Metadata[coreexecutor.RequestedModelMetadataKey]; got != "image-alias" {
 		t.Fatalf("requested model metadata = %v, want %q", got, "image-alias")
+	}
+}
+
+func TestExecuteStreamWithAuthManagerAllowImageModel_ForwardsRequestHeaders(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	const authID = "test-handlers-auth-manager-stream-forward-headers-auth"
+	modelRegistry.RegisterClient(authID, "openai", []*registry.ModelInfo{
+		{ID: "image-alias", DisplayName: "gpt-image-2", Created: time.Now().Unix()},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(authID)
+	})
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	executor := &authManagerStreamingTestExecutor{}
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       authID,
+		Provider: "openai",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	rawJSON := []byte(`{"model":"gpt-5.4-mini","tools":[{"model":"gpt-image-2"}]}`)
+	ctx := authManagerRequestContextWithHeaders(http.Header{"X-Amp-Thread-Id": []string{"T-stream-forwarded-header"}})
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManagerAllowImageModel(ctx, "openai-response", "gpt-5.4-mini", "image-alias", rawJSON, "")
+	if dataChan == nil {
+		t.Fatalf("expected data channel, got nil")
+	}
+	for range dataChan {
+	}
+	for range errChan {
+	}
+
+	if got := executor.lastStreamOpts.Headers.Get("X-Amp-Thread-Id"); got != "T-stream-forwarded-header" {
+		t.Fatalf("opts.Headers X-Amp-Thread-Id = %q, want %q", got, "T-stream-forwarded-header")
 	}
 }

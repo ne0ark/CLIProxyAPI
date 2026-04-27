@@ -678,7 +678,7 @@ func (s *SessionAffinitySelector) strictBoundAuthFailure(ctx context.Context, pr
 	if s == nil {
 		return nil
 	}
-	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	primaryID, fallbackIDs := extractSessionIDCandidates(opts.Headers, opts.OriginalRequest, opts.Metadata)
 	if primaryID == "" {
 		return nil
 	}
@@ -706,7 +706,10 @@ func (s *SessionAffinitySelector) strictBoundAuthFailure(ctx context.Context, pr
 		return nil
 	}
 
-	if fallbackID != "" && fallbackID != primaryID {
+	for _, fallbackID := range fallbackIDs {
+		if fallbackID == "" || fallbackID == primaryID {
+			continue
+		}
 		fallbackKey := provider + "::" + fallbackID + "::" + model
 		if cachedEntry, ok := s.cache.GetEntry(fallbackKey); ok {
 			if auth := findReusableBoundAuth(inspectionAuths, cachedEntry.authID, model, now); auth != nil {
@@ -735,7 +738,7 @@ func (s *SessionAffinitySelector) strictBoundAuthFailure(ctx context.Context, pr
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	entry := selectorLogEntry(ctx)
-	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	primaryID, fallbackIDs := extractSessionIDCandidates(opts.Headers, opts.OriginalRequest, opts.Metadata)
 	if primaryID == "" {
 		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
 		return s.fallback.Pick(ctx, provider, model, opts, auths)
@@ -774,7 +777,10 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return auth, nil
 	}
 
-	if fallbackID != "" && fallbackID != primaryID {
+	for _, fallbackID := range fallbackIDs {
+		if fallbackID == "" || fallbackID == primaryID {
+			continue
+		}
 		fallbackKey := provider + "::" + fallbackID + "::" + model
 		if cachedEntry, ok := s.cache.GetEntry(fallbackKey); ok {
 			cachedAuthID := cachedEntry.authID
@@ -837,18 +843,27 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 // Priority order:
 //  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority for Claude Code clients
 //  2. X-Session-ID header
-//  3. metadata.user_id (non-Claude Code format)
-//  4. conversation_id field in request body
-//  5. Stable hash from first few messages content (fallback)
+//  3. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  4. metadata.user_id (non-Claude Code format)
+//  5. conversation_id field in request body
+//  6. Stable hash from first few messages content (fallback)
 func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
 	primary, _ := extractSessionIDs(headers, payload, metadata)
 	return primary
 }
 
 // extractSessionIDs returns (primaryID, fallbackID) for session affinity.
-// primaryID: full hash including assistant response (stable after first turn)
-// fallbackID: short hash without assistant (used to inherit binding from first turn)
+// primaryID: highest-priority session identifier.
+// fallbackID: first legacy fallback candidate used to inherit older bindings.
 func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
+	primaryID, fallbackIDs := extractSessionIDCandidates(headers, payload, metadata)
+	if len(fallbackIDs) == 0 {
+		return primaryID, ""
+	}
+	return primaryID, fallbackIDs[0]
+}
+
+func extractSessionIDCandidates(headers http.Header, payload []byte, metadata map[string]any) (string, []string) {
 	// 1. metadata.user_id with Claude Code session format (highest priority)
 	if len(payload) > 0 {
 		userID := gjson.GetBytes(payload, "metadata.user_id").String()
@@ -856,13 +871,13 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 			// Old format: user_{hash}_account__session_{uuid}
 			if matches := sessionPattern.FindStringSubmatch(userID); len(matches) >= 2 {
 				id := "claude:" + matches[1]
-				return id, ""
+				return id, nil
 			}
 			// New format: JSON object with session_id field
 			// e.g. {"device_id":"...","account_uuid":"...","session_id":"uuid"}
 			if len(userID) > 0 && userID[0] == '{' {
 				if sid := gjson.Get(userID, "session_id").String(); sid != "" {
-					return "claude:" + sid, ""
+					return "claude:" + sid, nil
 				}
 			}
 		}
@@ -871,27 +886,63 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
 	// 2. X-Session-ID header
 	if headers != nil {
 		if sid := headers.Get("X-Session-ID"); sid != "" {
-			return "header:" + sid, ""
+			return "header:" + sid, nil
 		}
 	}
 
+	// 3. X-Amp-Thread-Id header (Amp CLI thread ID)
+	if headers != nil {
+		if tid := headers.Get("X-Amp-Thread-Id"); tid != "" {
+			legacyPrimary, legacyFallback := extractBodySessionIDs(payload)
+			return "amp:" + tid, buildSessionIDFallbacks(legacyPrimary, legacyFallback)
+		}
+	}
+
+	primaryID, fallbackID := extractBodySessionIDs(payload)
+	return primaryID, buildSessionIDFallbacks(fallbackID)
+}
+
+func extractBodySessionIDs(payload []byte) (string, string) {
 	if len(payload) == 0 {
 		return "", ""
 	}
 
-	// 3. metadata.user_id (non-Claude Code format)
+	// 4. metadata.user_id (non-Claude Code format)
 	userID := gjson.GetBytes(payload, "metadata.user_id").String()
 	if userID != "" {
 		return "user:" + userID, ""
 	}
 
-	// 4. conversation_id field
+	// 5. conversation_id field
 	if convID := gjson.GetBytes(payload, "conversation_id").String(); convID != "" {
 		return "conv:" + convID, ""
 	}
 
-	// 5. Hash-based fallback from message content
+	// 6. Hash-based fallback from message content
 	return extractMessageHashIDs(payload)
+}
+
+func buildSessionIDFallbacks(ids ...string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	fallbacks := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		fallbacks = append(fallbacks, id)
+	}
+	if len(fallbacks) == 0 {
+		return nil
+	}
+	return fallbacks
 }
 
 func extractMessageHashIDs(payload []byte) (primaryID, fallbackID string) {
