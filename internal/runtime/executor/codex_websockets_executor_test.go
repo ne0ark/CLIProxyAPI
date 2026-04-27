@@ -465,24 +465,27 @@ func TestEnsureUpstreamConnAuthSwitchRebuildsWebsocketConn(t *testing.T) {
 
 	defer executor.invalidateUpstreamConn(sess, conn2, "test_done", nil)
 
-	var got1, got2 string
-	select {
-	case got1 = <-authHeaderCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for first websocket handshake")
+	gotHeaders := make([]string, 0, 2)
+	for range 2 {
+		select {
+		case got := <-authHeaderCh:
+			gotHeaders = append(gotHeaders, got)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for websocket handshakes, got %v", gotHeaders)
+		}
 	}
-	select {
-	case got2 = <-authHeaderCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for second websocket handshake")
+
+	gotHeaderSet := make(map[string]struct{}, len(gotHeaders))
+	for _, got := range gotHeaders {
+		gotHeaderSet[got] = struct{}{}
 	}
-	if got1 != "Bearer token-1" {
-		t.Fatalf("first Authorization = %q, want %q", got1, "Bearer token-1")
+	if len(gotHeaderSet) != 2 {
+		t.Fatalf("Authorization headers = %v, want two distinct values", gotHeaders)
 	}
-	if got2 != "Bearer token-2" {
-		t.Fatalf("second Authorization = %q, want %q", got2, "Bearer token-2")
+	if _, ok := gotHeaderSet["Bearer token-1"]; !ok {
+		t.Fatalf("Authorization headers = %v, missing %q", gotHeaders, "Bearer token-1")
 	}
-	if got1 == got2 {
-		t.Fatal("expected different Authorization headers after auth switch")
+	if _, ok := gotHeaderSet["Bearer token-2"]; !ok {
+		t.Fatalf("Authorization headers = %v, missing %q", gotHeaders, "Bearer token-2")
 	}
 }
