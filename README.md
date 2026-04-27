@@ -54,19 +54,21 @@ VisionCoder is also offering our users a limited-time <a href="https://coder.vis
 ## Overview
 
 - OpenAI/Gemini/Claude compatible API endpoints for CLI models
-- OpenAI Codex support (GPT models) via OAuth login
+- OpenAI Codex support (GPT models) via OAuth login, strict WebSocket session affinity, and quota-error auth recovery
 - Claude Code support via OAuth login
-- Amp CLI and IDE extensions support with provider routing
+- Amp CLI and IDE extensions support with provider routing plus session affinity from thread/request IDs
 - Streaming and non-streaming responses
 - Function calling/tools support
 - Multimodal input support (text and images)
 - Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude)
 - Simple CLI authentication flows (Gemini, OpenAI, Claude)
+- Security-first management API with repeated-failure IP bans
 - Generative Language API Key support
 - AI Studio Build multi-account load balancing
 - Gemini CLI multi-account load balancing
 - Claude Code multi-account load balancing
 - OpenAI Codex multi-account load balancing
+- Antigravity credits fallback on quota exhaustion
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
 - Readiness probes can use both `GET /healthz` and `HEAD /healthz`
