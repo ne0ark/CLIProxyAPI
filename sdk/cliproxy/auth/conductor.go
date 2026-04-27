@@ -818,6 +818,12 @@ type streamBootstrapError struct {
 	headers http.Header
 }
 
+type antigravityCreditsReplaySignal struct {
+	cause   error
+	trigger error
+	authID  string
+}
+
 func cloneHTTPHeader(headers http.Header) http.Header {
 	if headers == nil {
 		return nil
@@ -854,6 +860,69 @@ func (e *streamBootstrapError) Headers() http.Header {
 		return nil
 	}
 	return cloneHTTPHeader(e.headers)
+}
+
+func (e *antigravityCreditsReplaySignal) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *antigravityCreditsReplaySignal) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *antigravityCreditsReplaySignal) AntigravityCreditsReplayTrigger() error {
+	if e == nil {
+		return nil
+	}
+	return e.trigger
+}
+
+func (e *antigravityCreditsReplaySignal) AntigravityCreditsReplayAuthID() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.authID)
+}
+
+func wrapAntigravityCreditsReplaySignal(cause, trigger error, authID string) error {
+	authID = strings.TrimSpace(authID)
+	if cause == nil || trigger == nil {
+		return cause
+	}
+	if cause == trigger && authID == "" {
+		return cause
+	}
+	return &antigravityCreditsReplaySignal{cause: cause, trigger: trigger, authID: authID}
+}
+
+func antigravityCreditsReplayTrigger(err error) error {
+	type replayTriggerProvider interface {
+		AntigravityCreditsReplayTrigger() error
+	}
+	var provider replayTriggerProvider
+	if errors.As(err, &provider) && provider != nil {
+		if trigger := provider.AntigravityCreditsReplayTrigger(); trigger != nil {
+			return trigger
+		}
+	}
+	return err
+}
+
+func antigravityCreditsReplayAuthID(err error) string {
+	type replayAuthIDProvider interface {
+		AntigravityCreditsReplayAuthID() string
+	}
+	var provider replayAuthIDProvider
+	if errors.As(err, &provider) && provider != nil {
+		return strings.TrimSpace(provider.AntigravityCreditsReplayAuthID())
+	}
+	return ""
 }
 
 func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamResult {
@@ -1336,6 +1405,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 	}
 	if lastErr != nil {
+		if triggerErr := antigravityCreditsReplayTrigger(lastErr); shouldAttemptAntigravityCreditsFallback(m, triggerErr, normalized) {
+			if resp, ok := m.tryAntigravityCreditsExecute(ctx, normalized, antigravityCreditsReplayAuthID(lastErr), req, opts); ok {
+				return resp, nil
+			}
+		}
 		return cliproxyexecutor.Response{}, lastErr
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -1400,6 +1474,15 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		}
 	}
 	if lastErr != nil {
+		if triggerErr := antigravityCreditsReplayTrigger(lastErr); shouldAttemptAntigravityCreditsFallback(m, triggerErr, normalized) {
+			if result, ok := m.tryAntigravityCreditsExecuteStream(ctx, normalized, antigravityCreditsReplayAuthID(lastErr), req, opts); ok {
+				return result, nil
+			}
+		}
+		var bootstrapErr *streamBootstrapError
+		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
+			return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
+		}
 		return nil, lastErr
 	}
 	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -1414,16 +1497,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var creditsReplayErr error
+	var creditsReplayAuthID string
 	for {
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
-				return cliproxyexecutor.Response{}, lastErr
+				return cliproxyexecutor.Response{}, wrapAntigravityCreditsReplaySignal(lastErr, creditsReplayErr, creditsReplayAuthID)
 			}
-			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+			return cliproxyexecutor.Response{}, wrapAntigravityCreditsReplaySignal(&Error{Code: "auth_not_found", Message: "no auth available"}, creditsReplayErr, creditsReplayAuthID)
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
 		if errPick != nil {
-			return cliproxyexecutor.Response{}, preferStrictBoundAuthError(lastErr, errPick)
+			return cliproxyexecutor.Response{}, wrapAntigravityCreditsReplaySignal(preferStrictBoundAuthError(lastErr, errPick), creditsReplayErr, creditsReplayAuthID)
 		}
 
 		entry := logEntryWithRequestID(ctx)
@@ -1473,6 +1558,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if strings.EqualFold(strings.TrimSpace(provider), "antigravity") && shouldAttemptAntigravityCreditsFallback(m, authErr, []string{provider}) && creditsReplayErr == nil {
+				creditsReplayErr = authErr
+				creditsReplayAuthID = auth.ID
 			}
 			lastErr = authErr
 			continue
@@ -1575,25 +1664,19 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var creditsReplayErr error
+	var creditsReplayAuthID string
 	for {
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
-				var bootstrapErr *streamBootstrapError
-				if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-					return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
-				}
-				return nil, lastErr
+				return nil, wrapAntigravityCreditsReplaySignal(lastErr, creditsReplayErr, creditsReplayAuthID)
 			}
-			return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+			return nil, wrapAntigravityCreditsReplaySignal(&Error{Code: "auth_not_found", Message: "no auth available"}, creditsReplayErr, creditsReplayAuthID)
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
 		if errPick != nil {
 			finalErr := preferStrictBoundAuthError(lastErr, errPick)
-			var bootstrapErr *streamBootstrapError
-			if errors.As(finalErr, &bootstrapErr) && bootstrapErr != nil {
-				return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
-			}
-			return nil, finalErr
+			return nil, wrapAntigravityCreditsReplaySignal(finalErr, creditsReplayErr, creditsReplayAuthID)
 		}
 
 		entry := logEntryWithRequestID(ctx)
@@ -1618,6 +1701,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
+			}
+			if strings.EqualFold(strings.TrimSpace(provider), "antigravity") && shouldAttemptAntigravityCreditsFallback(m, errStream, []string{provider}) && creditsReplayErr == nil {
+				creditsReplayErr = errStream
+				creditsReplayAuthID = auth.ID
 			}
 			lastErr = errStream
 			continue
@@ -2528,8 +2615,8 @@ func retryAfterFromError(err error) *time.Duration {
 	type retryAfterProvider interface {
 		RetryAfter() *time.Duration
 	}
-	rap, ok := err.(retryAfterProvider)
-	if !ok || rap == nil {
+	var rap retryAfterProvider
+	if !errors.As(err, &rap) || rap == nil {
 		return nil
 	}
 	retryAfter := rap.RetryAfter()
@@ -3141,6 +3228,457 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		m.mu.Unlock()
 	}
 	return authCopy, executor, providerKey, nil
+}
+
+func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opts cliproxyexecutor.Options) []creditsCandidateEntry {
+	if m == nil {
+		return nil
+	}
+	routeModel = requestedModelFromOptions(opts, routeModel)
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	now := time.Now()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	registryRef := registry.GetGlobalRegistry()
+	var known []creditsCandidateEntry
+	var unknown []creditsCandidateEntry
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+			continue
+		}
+		if !m.authSupportsRouteModel(registryRef, auth, routeModel) {
+			continue
+		}
+		models := m.executionModelCandidates(auth, routeModel)
+		if len(models) == 0 {
+			continue
+		}
+		pooled := len(models) > 1
+		filteredModels := make([]string, 0, len(models))
+		for _, upstreamModel := range models {
+			stateModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
+			blocked, reason, _ := isAuthBlockedForModel(auth, stateModel, now)
+			if blocked && reason != blockReasonCooldown {
+				continue
+			}
+			filteredModels = append(filteredModels, upstreamModel)
+		}
+		models = filteredModels
+		if len(models) == 0 {
+			continue
+		}
+		if !containsClaudeModel(models) {
+			continue
+		}
+		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		executor, ok := m.executors[providerKey]
+		if !ok {
+			continue
+		}
+
+		hint, okHint := GetAntigravityCreditsHint(auth.ID)
+		if okHint && hint.Known {
+			if !hint.Available {
+				if !antigravityCreditsHintIsStale(hint, now) {
+					continue
+				}
+				unknown = append(unknown, creditsCandidateEntry{
+					auth:     auth.Clone(),
+					executor: executor,
+					provider: providerKey,
+					models:   append([]string(nil), models...),
+					pooled:   pooled,
+				})
+				continue
+			}
+			known = append(known, creditsCandidateEntry{
+				auth:     auth.Clone(),
+				executor: executor,
+				provider: providerKey,
+				models:   append([]string(nil), models...),
+				pooled:   pooled,
+			})
+			continue
+		}
+
+		unknown = append(unknown, creditsCandidateEntry{
+			auth:     auth.Clone(),
+			executor: executor,
+			provider: providerKey,
+			models:   append([]string(nil), models...),
+			pooled:   pooled,
+		})
+	}
+	sort.Slice(known, func(i, j int) bool {
+		return known[i].auth.ID < known[j].auth.ID
+	})
+	sort.Slice(unknown, func(i, j int) bool {
+		return unknown[i].auth.ID < unknown[j].auth.ID
+	})
+	return append(known, unknown...)
+}
+
+type creditsCandidateEntry struct {
+	auth     *Auth
+	executor ProviderExecutor
+	provider string
+	models   []string
+	pooled   bool
+}
+
+func containsClaudeModel(models []string) bool {
+	for _, model := range models {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(model)), "claude") {
+			return true
+		}
+	}
+	return false
+}
+
+func replaySelectorProviderKey(providers []string) string {
+	seen := make(map[string]struct{}, len(providers))
+	ordered := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		providerKey := strings.TrimSpace(strings.ToLower(provider))
+		if providerKey == "" {
+			continue
+		}
+		if _, ok := seen[providerKey]; ok {
+			continue
+		}
+		seen[providerKey] = struct{}{}
+		ordered = append(ordered, providerKey)
+	}
+	switch len(ordered) {
+	case 0:
+		return "antigravity"
+	case 1:
+		return ordered[0]
+	default:
+		return "mixed"
+	}
+}
+
+func relaxAntigravityCreditsCooldownState(state *ModelState, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	if state.Status == StatusDisabled || !state.Unavailable || state.NextRetryAfter.IsZero() || !state.NextRetryAfter.After(now) || !state.Quota.Exceeded {
+		return false
+	}
+	resetModelState(state, now)
+	return true
+}
+
+func relaxAntigravityCreditsSelectionModelState(auth *Auth, model string, now time.Time) bool {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	relaxed := false
+	if state, ok := auth.ModelStates[model]; ok {
+		if relaxAntigravityCreditsCooldownState(state, now) {
+			relaxed = true
+		}
+	}
+	baseModel := canonicalModelKey(model)
+	if baseModel != "" && baseModel != model {
+		if state, ok := auth.ModelStates[baseModel]; ok {
+			if relaxAntigravityCreditsCooldownState(state, now) {
+				relaxed = true
+			}
+		}
+	}
+	return relaxed
+}
+
+func (m *Manager) relaxedAntigravityCreditsSelectionAuth(auth *Auth, routeModel string, now time.Time) *Auth {
+	if auth == nil {
+		return nil
+	}
+	relaxed := auth.Clone()
+	if relaxed == nil {
+		return nil
+	}
+	selectionModel := m.selectionModelForAuth(auth, routeModel)
+	modelRelaxed := relaxAntigravityCreditsSelectionModelState(relaxed, selectionModel, now)
+	if relaxAntigravityCreditsSelectionModelState(relaxed, routeModel, now) {
+		modelRelaxed = true
+	}
+	if modelRelaxed {
+		updateAggregatedAvailability(relaxed, now)
+		if !hasModelError(relaxed, now) {
+			relaxed.LastError = nil
+			relaxed.StatusMessage = ""
+			if relaxed.Status != StatusDisabled {
+				relaxed.Status = StatusActive
+			}
+		}
+	}
+	return relaxed
+}
+
+func (m *Manager) pickAntigravityCreditsCandidate(ctx context.Context, providers []string, routeModel string, opts cliproxyexecutor.Options, candidates []creditsCandidateEntry) (creditsCandidateEntry, error) {
+	if m == nil || len(candidates) == 0 {
+		return creditsCandidateEntry{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	}
+	now := time.Now()
+	selectable := make([]*Auth, 0, len(candidates))
+	inspection := make([]*Auth, 0, len(candidates))
+	entryByID := make(map[string]creditsCandidateEntry, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.auth == nil {
+			continue
+		}
+		relaxed := m.relaxedAntigravityCreditsSelectionAuth(candidate.auth, routeModel, now)
+		if relaxed == nil {
+			continue
+		}
+		selectable = append(selectable, relaxed)
+		inspection = append(inspection, relaxed.Clone())
+		entryByID[relaxed.ID] = candidate
+	}
+	if len(selectable) == 0 {
+		return creditsCandidateEntry{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	}
+
+	selectorProvider := replaySelectorProviderKey(providers)
+	selectorCtx := ctx
+	selectableSelectorCandidates := m.sessionAffinitySelectorCandidates(selectable, routeModel)
+	inspectionSelectorCandidates := m.sessionAffinitySelectorCandidates(inspection, routeModel)
+	if _, ok := m.selector.(*SessionAffinitySelector); ok && (len(selectableSelectorCandidates) > 0 || len(inspectionSelectorCandidates) > 0) {
+		selectorCtx = withSessionAffinityCandidates(selectorCtx, selectableSelectorCandidates, inspectionSelectorCandidates)
+	}
+
+	selected, errPick := m.selector.Pick(selectorCtx, selectorProvider, selectionArgForSelector(m.selector, routeModel), opts, selectorInputAuths(m.selector, selectable, inspectionSelectorCandidates))
+	if errPick != nil {
+		return creditsCandidateEntry{}, errPick
+	}
+	if selected == nil {
+		return creditsCandidateEntry{}, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+	}
+	entry, ok := entryByID[selected.ID]
+	if !ok {
+		return creditsCandidateEntry{}, &Error{Code: "auth_not_found", Message: "selected auth not found"}
+	}
+	return entry, nil
+}
+
+func removeAntigravityCreditsCandidate(candidates []creditsCandidateEntry, authID string) []creditsCandidateEntry {
+	authID = strings.TrimSpace(authID)
+	if authID == "" || len(candidates) == 0 {
+		return candidates
+	}
+	out := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.auth != nil && strings.TrimSpace(candidate.auth.ID) == authID {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func filterAntigravityCreditsCandidatesByAuthID(candidates []creditsCandidateEntry, authID string) []creditsCandidateEntry {
+	authID = strings.TrimSpace(authID)
+	if authID == "" || len(candidates) == 0 {
+		return nil
+	}
+	filtered := make([]creditsCandidateEntry, 0, 1)
+	for _, candidate := range candidates {
+		if candidate.auth != nil && strings.TrimSpace(candidate.auth.ID) == authID {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func shouldAttemptAntigravityCreditsFallback(m *Manager, lastErr error, providers []string) bool {
+	status := statusCodeFromError(lastErr)
+	log.WithFields(log.Fields{
+		"lastErr":   lastErr,
+		"status":    status,
+		"providers": providers,
+	}).Debug("shouldAttemptAntigravityCreditsFallback")
+	if m == nil || lastErr == nil {
+		return false
+	}
+	if len(providers) > 0 {
+		hasAntigravity := false
+		for _, p := range providers {
+			if strings.EqualFold(strings.TrimSpace(p), "antigravity") {
+				hasAntigravity = true
+				break
+			}
+		}
+		if !hasAntigravity {
+			return false
+		}
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || !cfg.QuotaExceeded.AntigravityCredits {
+		return false
+	}
+	switch status {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return true
+	case 0:
+		var authErr *Error
+		if errors.As(lastErr, &authErr) && authErr != nil {
+			return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable" || authErr.Code == "model_cooldown"
+		}
+		var cooldownErr *modelCooldownError
+		if errors.As(lastErr, &cooldownErr) {
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, providers []string, preferredAuthID string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, bool) {
+	routeModel := requestedModelFromOptions(opts, req.Model)
+	candidates := m.findAllAntigravityCreditsCandidateAuths(routeModel, opts)
+	if preferred := filterAntigravityCreditsCandidatesByAuthID(candidates, preferredAuthID); len(preferred) > 0 {
+		if c, errPick := m.pickAntigravityCreditsCandidate(ctx, providers, routeModel, opts, preferred); errPick == nil {
+			candidates = removeAntigravityCreditsCandidate(candidates, c.auth.ID)
+			if ctx.Err() != nil {
+				return cliproxyexecutor.Response{}, false
+			}
+			creditsCtx := WithAntigravityCredits(ctx)
+			if rt := m.roundTripperFor(c.auth); rt != nil {
+				creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
+				creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+			}
+			creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
+			publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+			if len(c.models) > 0 {
+				for _, upstreamModel := range c.models {
+					resultModel := m.stateModelForExecution(c.auth, routeModel, upstreamModel, c.pooled)
+					execReq := req
+					execReq.Model = upstreamModel
+					resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+					result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, Success: errExec == nil}
+					if errExec != nil {
+						result.Error = &Error{Message: errExec.Error()}
+						if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
+							result.Error.HTTPStatus = se.StatusCode()
+						}
+						if ra := retryAfterFromError(errExec); ra != nil {
+							result.RetryAfter = ra
+						}
+						m.MarkResult(creditsCtx, result)
+						continue
+					}
+					m.MarkResult(creditsCtx, result)
+					return resp, true
+				}
+			}
+		}
+	}
+	for len(candidates) > 0 {
+		c, errPick := m.pickAntigravityCreditsCandidate(ctx, providers, routeModel, opts, candidates)
+		if errPick != nil {
+			return cliproxyexecutor.Response{}, false
+		}
+		candidates = removeAntigravityCreditsCandidate(candidates, c.auth.ID)
+		if ctx.Err() != nil {
+			return cliproxyexecutor.Response{}, false
+		}
+		creditsCtx := WithAntigravityCredits(ctx)
+		if rt := m.roundTripperFor(c.auth); rt != nil {
+			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
+			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+		}
+		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
+		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+		if len(c.models) == 0 {
+			continue
+		}
+		for _, upstreamModel := range c.models {
+			resultModel := m.stateModelForExecution(c.auth, routeModel, upstreamModel, c.pooled)
+			execReq := req
+			execReq.Model = upstreamModel
+			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, Success: errExec == nil}
+			if errExec != nil {
+				result.Error = &Error{Message: errExec.Error()}
+				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
+					result.Error.HTTPStatus = se.StatusCode()
+				}
+				if ra := retryAfterFromError(errExec); ra != nil {
+					result.RetryAfter = ra
+				}
+				m.MarkResult(creditsCtx, result)
+				continue
+			}
+			m.MarkResult(creditsCtx, result)
+			return resp, true
+		}
+	}
+	return cliproxyexecutor.Response{}, false
+}
+
+func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, providers []string, preferredAuthID string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, bool) {
+	routeModel := requestedModelFromOptions(opts, req.Model)
+	candidates := m.findAllAntigravityCreditsCandidateAuths(routeModel, opts)
+	if preferred := filterAntigravityCreditsCandidatesByAuthID(candidates, preferredAuthID); len(preferred) > 0 {
+		if c, errPick := m.pickAntigravityCreditsCandidate(ctx, providers, routeModel, opts, preferred); errPick == nil {
+			candidates = removeAntigravityCreditsCandidate(candidates, c.auth.ID)
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			creditsCtx := WithAntigravityCredits(ctx)
+			if rt := m.roundTripperFor(c.auth); rt != nil {
+				creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
+				creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+			}
+			creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
+			publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+			if len(c.models) > 0 {
+				result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, c.models, c.pooled)
+				if errStream == nil {
+					return result, true
+				}
+			}
+		}
+	}
+	for len(candidates) > 0 {
+		c, errPick := m.pickAntigravityCreditsCandidate(ctx, providers, routeModel, opts, candidates)
+		if errPick != nil {
+			return nil, false
+		}
+		candidates = removeAntigravityCreditsCandidate(candidates, c.auth.ID)
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		creditsCtx := WithAntigravityCredits(ctx)
+		if rt := m.roundTripperFor(c.auth); rt != nil {
+			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
+			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+		}
+		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
+		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+		if len(c.models) == 0 {
+			continue
+		}
+		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, c.models, c.pooled)
+		if errStream != nil {
+			continue
+		}
+		return result, true
+	}
+	return nil, false
 }
 
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {

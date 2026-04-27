@@ -52,8 +52,8 @@ const (
 	defaultAntigravityAgent                = "antigravity/1.21.9 darwin/arm64" // fallback only; overridden at runtime by misc.AntigravityUserAgent()
 	antigravityAuthType                    = "antigravity"
 	refreshSkew                            = 3000 * time.Second
-	antigravityCreditsRetryTTL             = 5 * time.Hour
-	antigravityCreditsAutoDisableDuration  = 5 * time.Hour
+	antigravityCreditsHintRefreshInterval  = 10 * time.Minute
+	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
@@ -62,10 +62,7 @@ const (
 type antigravity429Category string
 
 type antigravityCreditsFailureState struct {
-	Count                    int
-	DisabledUntil            time.Time
-	PermanentlyDisabled      bool
-	ExplicitBalanceExhausted bool
+	PermanentlyDisabled bool
 }
 
 type antigravity429DecisionKind string
@@ -91,8 +88,9 @@ var (
 	randSource                        = rand.New(rand.NewSource(time.Now().UnixNano()))
 	randSourceMutex                   sync.Mutex
 	antigravityCreditsFailureByAuth   sync.Map
-	antigravityPreferCreditsByModel   sync.Map
 	antigravityShortCooldownByAuth    sync.Map
+	antigravityCreditsBalanceByAuth   sync.Map // auth.ID → antigravityCreditsBalance
+	antigravityCreditsHintRefreshByID sync.Map // auth.ID → *antigravityCreditsHintRefreshState
 	antigravityQuotaExhaustedKeywords = []string{
 		"quota_exhausted",
 		"quota exhausted",
@@ -112,6 +110,75 @@ var (
 		"resource has been exhausted",
 	}
 )
+
+type antigravityCreditsBalance struct {
+	CreditAmount    float64
+	MinCreditAmount float64
+	PaidTierID      string
+	Known           bool
+}
+
+type antigravityCreditsHintRefreshState struct {
+	mu          sync.Mutex
+	lastAttempt time.Time
+}
+
+func antigravityAuthHasCredits(auth *cliproxyauth.Auth) bool {
+	if auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return false
+	}
+	if hint, ok := cliproxyauth.GetAntigravityCreditsHint(auth.ID); ok && hint.Known {
+		return hint.Available
+	}
+	val, ok := antigravityCreditsBalanceByAuth.Load(strings.TrimSpace(auth.ID))
+	if !ok {
+		return true
+	}
+	bal, valid := val.(antigravityCreditsBalance)
+	if !valid {
+		antigravityCreditsBalanceByAuth.Delete(strings.TrimSpace(auth.ID))
+		return false
+	}
+	if !bal.Known {
+		return false
+	}
+	available := bal.CreditAmount >= bal.MinCreditAmount
+	cliproxyauth.SetAntigravityCreditsHint(strings.TrimSpace(auth.ID), cliproxyauth.AntigravityCreditsHint{
+		Known:           true,
+		Available:       available,
+		CreditAmount:    bal.CreditAmount,
+		MinCreditAmount: bal.MinCreditAmount,
+		PaidTierID:      bal.PaidTierID,
+		UpdatedAt:       time.Now(),
+	})
+	return available
+}
+
+func parseMetaFloat(metadata map[string]any, key string) (float64, bool) {
+	v, ok := metadata[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := v.(type) {
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	case json.Number:
+		if f, err := typed.Float64(); err == nil {
+			return f, true
+		}
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
 type AntigravityExecutor struct {
@@ -349,6 +416,10 @@ func decideAntigravity429(body []byte) antigravity429Decision {
 	return decision
 }
 
+func antigravityCreditsRetryEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.QuotaExceeded.AntigravityCredits
+}
+
 func antigravityHasQuotaResetDelayOrModelInfo(body []byte) bool {
 	if len(body) == 0 {
 		return false
@@ -371,75 +442,40 @@ func antigravityHasQuotaResetDelayOrModelInfo(body []byte) bool {
 	return false
 }
 
-func antigravityCreditsRetryEnabled(cfg *config.Config) bool {
-	return cfg != nil && cfg.QuotaExceeded.AntigravityCredits
-}
-
-func antigravityCreditsFailureStateForAuth(auth *cliproxyauth.Auth) (string, antigravityCreditsFailureState, bool) {
-	if auth == nil || strings.TrimSpace(auth.ID) == "" {
-		return "", antigravityCreditsFailureState{}, false
-	}
-	authID := strings.TrimSpace(auth.ID)
-	value, ok := antigravityCreditsFailureByAuth.Load(authID)
-	if !ok {
-		return authID, antigravityCreditsFailureState{}, true
-	}
-	state, ok := value.(antigravityCreditsFailureState)
-	if !ok {
-		antigravityCreditsFailureByAuth.Delete(authID)
-		return authID, antigravityCreditsFailureState{}, true
-	}
-	return authID, state, true
-}
-
-func antigravityCreditsDisabled(auth *cliproxyauth.Auth, now time.Time) bool {
-	authID, state, ok := antigravityCreditsFailureStateForAuth(auth)
-	if !ok {
-		return false
-	}
-	if state.PermanentlyDisabled {
-		return true
-	}
-	if state.DisabledUntil.IsZero() {
-		return false
-	}
-	if state.DisabledUntil.After(now) {
-		return true
-	}
-	antigravityCreditsFailureByAuth.Delete(authID)
-	return false
-}
-
-func recordAntigravityCreditsFailure(auth *cliproxyauth.Auth, now time.Time) {
-	authID, state, ok := antigravityCreditsFailureStateForAuth(auth)
-	if !ok {
-		return
-	}
-	if state.PermanentlyDisabled {
-		antigravityCreditsFailureByAuth.Store(authID, state)
-		return
-	}
-	state.Count++
-	state.DisabledUntil = now.Add(antigravityCreditsAutoDisableDuration)
-	antigravityCreditsFailureByAuth.Store(authID, state)
-}
-
-func clearAntigravityCreditsFailureState(auth *cliproxyauth.Auth) {
+func clearAntigravityCreditsPermanentlyDisabled(auth *cliproxyauth.Auth) {
 	if auth == nil || strings.TrimSpace(auth.ID) == "" {
 		return
 	}
 	antigravityCreditsFailureByAuth.Delete(strings.TrimSpace(auth.ID))
 }
+
 func markAntigravityCreditsPermanentlyDisabled(auth *cliproxyauth.Auth) {
 	if auth == nil || strings.TrimSpace(auth.ID) == "" {
 		return
 	}
 	authID := strings.TrimSpace(auth.ID)
 	state := antigravityCreditsFailureState{
-		PermanentlyDisabled:      true,
-		ExplicitBalanceExhausted: true,
+		PermanentlyDisabled: true,
 	}
 	antigravityCreditsFailureByAuth.Store(authID, state)
+	hint := cliproxyauth.AntigravityCreditsHint{
+		Known:     true,
+		Available: false,
+		UpdatedAt: time.Now(),
+	}
+	if existing, ok := cliproxyauth.GetAntigravityCreditsHint(authID); ok {
+		hint = existing
+		hint.Known = true
+		hint.Available = false
+		hint.UpdatedAt = time.Now()
+	} else if value, ok := antigravityCreditsBalanceByAuth.Load(authID); ok {
+		if bal, valid := value.(antigravityCreditsBalance); valid {
+			hint.CreditAmount = bal.CreditAmount
+			hint.MinCreditAmount = bal.MinCreditAmount
+			hint.PaidTierID = bal.PaidTierID
+		}
+	}
+	cliproxyauth.SetAntigravityCreditsHint(authID, hint)
 }
 
 func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
@@ -462,74 +498,27 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
 	return false
 }
 
-func antigravityPreferCreditsKey(auth *cliproxyauth.Auth, modelName string) string {
-	if auth == nil {
-		return ""
-	}
-	authID := strings.TrimSpace(auth.ID)
-	modelName = strings.TrimSpace(modelName)
-	if authID == "" || modelName == "" {
-		return ""
-	}
-	return authID + "|" + modelName
-}
-
-func antigravityShouldPreferCredits(auth *cliproxyauth.Auth, modelName string, now time.Time) bool {
-	key := antigravityPreferCreditsKey(auth, modelName)
-	if key == "" {
-		return false
-	}
-	value, ok := antigravityPreferCreditsByModel.Load(key)
-	if !ok {
-		return false
-	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
-		antigravityPreferCreditsByModel.Delete(key)
-		return false
-	}
-	if !until.After(now) {
-		antigravityPreferCreditsByModel.Delete(key)
-		return false
-	}
-	return true
-}
-
-func markAntigravityPreferCredits(auth *cliproxyauth.Auth, modelName string, now time.Time, retryAfter *time.Duration) {
-	key := antigravityPreferCreditsKey(auth, modelName)
-	if key == "" {
-		return
-	}
-	until := now.Add(antigravityCreditsRetryTTL)
-	if retryAfter != nil && *retryAfter > 0 {
-		until = now.Add(*retryAfter)
-	}
-	antigravityPreferCreditsByModel.Store(key, until)
-}
-
-func clearAntigravityPreferCredits(auth *cliproxyauth.Auth, modelName string) {
-	key := antigravityPreferCreditsKey(auth, modelName)
-	if key == "" {
-		return
-	}
-	antigravityPreferCreditsByModel.Delete(key)
-}
-
-func shouldMarkAntigravityCreditsExhausted(statusCode int, body []byte, reqErr error) bool {
-	if reqErr != nil || statusCode == 0 {
+func antigravityShouldDisableCredits(statusCode int, body []byte) bool {
+	if len(body) == 0 {
 		return false
 	}
 	if statusCode >= http.StatusInternalServerError || statusCode == http.StatusRequestTimeout {
 		return false
 	}
+	if antigravityHasExplicitCreditsBalanceExhaustedReason(body) {
+		return true
+	}
 	lowerBody := strings.ToLower(string(body))
 	for _, keyword := range antigravityCreditsExhaustedKeywords {
 		if strings.Contains(lowerBody, keyword) {
-			if keyword == "resource has been exhausted" &&
-				statusCode == http.StatusTooManyRequests &&
-				decideAntigravity429(body).kind == antigravity429DecisionSoftRetry &&
-				!antigravityHasQuotaResetDelayOrModelInfo(body) {
-				return false
+			if keyword == "resource has been exhausted" && statusCode == http.StatusTooManyRequests {
+				if antigravityHasQuotaResetDelayOrModelInfo(body) {
+					return false
+				}
+				switch decideAntigravity429(body).kind {
+				case antigravity429DecisionInstantRetrySameAuth, antigravity429DecisionShortCooldownSwitchAuth, antigravity429DecisionFullQuotaExhausted:
+					return false
+				}
 			}
 			return true
 		}
@@ -545,99 +534,6 @@ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
 		}
 	}
 	return err
-}
-
-func (e *AntigravityExecutor) attemptCreditsFallback(
-	ctx context.Context,
-	auth *cliproxyauth.Auth,
-	httpClient *http.Client,
-	token string,
-	modelName string,
-	payload []byte,
-	stream bool,
-	alt string,
-	baseURL string,
-	originalBody []byte,
-) (*http.Response, bool) {
-	if !antigravityCreditsRetryEnabled(e.cfg) {
-		return nil, false
-	}
-	if decideAntigravity429(originalBody).kind != antigravity429DecisionFullQuotaExhausted {
-		return nil, false
-	}
-	now := time.Now()
-	if shouldForcePermanentDisableCredits(originalBody) {
-		clearAntigravityPreferCredits(auth, modelName)
-		markAntigravityCreditsPermanentlyDisabled(auth)
-		return nil, false
-	}
-
-	if antigravityHasExplicitCreditsBalanceExhaustedReason(originalBody) {
-		clearAntigravityPreferCredits(auth, modelName)
-		markAntigravityCreditsPermanentlyDisabled(auth)
-		return nil, false
-	}
-
-	if antigravityCreditsDisabled(auth, now) {
-		return nil, false
-	}
-	creditsPayload := injectEnabledCreditTypes(payload)
-	if len(creditsPayload) == 0 {
-		return nil, false
-	}
-
-	httpReq, errReq := e.buildRequest(ctx, auth, token, modelName, creditsPayload, stream, alt, baseURL)
-	if errReq != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, errReq)
-		clearAntigravityPreferCredits(auth, modelName)
-		recordAntigravityCreditsFailure(auth, now)
-		return nil, true
-	}
-	httpResp, errDo := httpClient.Do(httpReq)
-	if errDo != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
-		clearAntigravityPreferCredits(auth, modelName)
-		recordAntigravityCreditsFailure(auth, now)
-		return nil, true
-	}
-	if httpResp.StatusCode >= http.StatusOK && httpResp.StatusCode < http.StatusMultipleChoices {
-		retryAfter, _ := parseRetryDelay(originalBody)
-		markAntigravityPreferCredits(auth, modelName, now, retryAfter)
-		clearAntigravityCreditsFailureState(auth)
-		return httpResp, true
-	}
-
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	bodyBytes, errRead := io.ReadAll(httpResp.Body)
-	if errClose := httpResp.Body.Close(); errClose != nil {
-		log.Errorf("antigravity executor: close credits fallback response body error: %v", errClose)
-	}
-	if errRead != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
-		clearAntigravityPreferCredits(auth, modelName)
-		recordAntigravityCreditsFailure(auth, now)
-		return nil, true
-	}
-	helps.AppendAPIResponseChunk(ctx, e.cfg, bodyBytes)
-	if shouldForcePermanentDisableCredits(bodyBytes) {
-		clearAntigravityPreferCredits(auth, modelName)
-		markAntigravityCreditsPermanentlyDisabled(auth)
-		return nil, true
-	}
-
-	if antigravityHasExplicitCreditsBalanceExhaustedReason(bodyBytes) {
-		clearAntigravityPreferCredits(auth, modelName)
-		markAntigravityCreditsPermanentlyDisabled(auth)
-		return nil, true
-	}
-
-	clearAntigravityPreferCredits(auth, modelName)
-	recordAntigravityCreditsFailure(auth, now)
-	return nil, true
-}
-
-func shouldForcePermanentDisableCredits(body []byte) bool {
-	return antigravityHasExplicitCreditsBalanceExhaustedReason(body)
 }
 
 // Execute performs a non-streaming request to the Antigravity API.
@@ -690,6 +586,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, "antigravity", "request", translated, originalTranslated, requestedModel)
+	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
@@ -703,11 +600,10 @@ attemptLoop:
 
 		for idx, baseURL := range baseURLs {
 			requestPayload := translated
-			usedCreditsDirect := false
-			if antigravityCreditsRetryEnabled(e.cfg) && antigravityShouldPreferCredits(auth, baseModel, time.Now()) {
+			if useCredits {
 				if creditsPayload := injectEnabledCreditTypes(translated); len(creditsPayload) > 0 {
 					requestPayload = creditsPayload
-					usedCreditsDirect = true
+					helps.MarkCreditsUsed(ctx)
 				}
 			}
 
@@ -764,33 +660,11 @@ attemptLoop:
 				case antigravity429DecisionShortCooldownSwitchAuth:
 					if decision.retryAfter != nil && *decision.retryAfter > 0 {
 						markAntigravityShortCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
-						log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown and skipping credits fallback", *decision.retryAfter, baseModel)
+						log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 					}
 				case antigravity429DecisionFullQuotaExhausted:
-					if usedCreditsDirect {
-						clearAntigravityPreferCredits(auth, baseModel)
-						recordAntigravityCreditsFailure(auth, time.Now())
-					} else {
-						creditsResp, _ := e.attemptCreditsFallback(ctx, auth, httpClient, token, baseModel, translated, false, opts.Alt, baseURL, bodyBytes)
-						if creditsResp != nil {
-							helps.RecordAPIResponseMetadata(ctx, e.cfg, creditsResp.StatusCode, creditsResp.Header.Clone())
-							creditsBody, errCreditsRead := io.ReadAll(creditsResp.Body)
-							if errClose := creditsResp.Body.Close(); errClose != nil {
-								log.Errorf("antigravity executor: close credits success response body error: %v", errClose)
-							}
-							if errCreditsRead != nil {
-								helps.RecordAPIResponseError(ctx, e.cfg, errCreditsRead)
-								err = errCreditsRead
-								return resp, err
-							}
-							helps.AppendAPIResponseChunk(ctx, e.cfg, creditsBody)
-							reporter.Publish(ctx, helps.ParseAntigravityUsage(creditsBody))
-							var param any
-							converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, creditsBody, &param)
-							resp = cliproxyexecutor.Response{Payload: converted, Headers: creditsResp.Header.Clone()}
-							reporter.EnsurePublished(ctx)
-							return resp, nil
-						}
+					if useCredits && antigravityShouldDisableCredits(httpResp.StatusCode, bodyBytes) {
+						markAntigravityCreditsPermanentlyDisabled(auth)
 					}
 				}
 			}
@@ -904,6 +778,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, "antigravity", "request", translated, originalTranslated, requestedModel)
+	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
@@ -918,11 +793,10 @@ attemptLoop:
 
 		for idx, baseURL := range baseURLs {
 			requestPayload := translated
-			usedCreditsDirect := false
-			if antigravityCreditsRetryEnabled(e.cfg) && antigravityShouldPreferCredits(auth, baseModel, time.Now()) {
+			if useCredits {
 				if creditsPayload := injectEnabledCreditTypes(translated); len(creditsPayload) > 0 {
 					requestPayload = creditsPayload
-					usedCreditsDirect = true
+					helps.MarkCreditsUsed(ctx)
 				}
 			}
 			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL)
@@ -993,18 +867,11 @@ attemptLoop:
 					case antigravity429DecisionShortCooldownSwitchAuth:
 						if decision.retryAfter != nil && *decision.retryAfter > 0 {
 							markAntigravityShortCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
-							log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown and skipping credits fallback", *decision.retryAfter, baseModel)
+							log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 						}
 					case antigravity429DecisionFullQuotaExhausted:
-						if usedCreditsDirect {
-							clearAntigravityPreferCredits(auth, baseModel)
-							recordAntigravityCreditsFailure(auth, time.Now())
-						} else {
-							creditsResp, _ := e.attemptCreditsFallback(ctx, auth, httpClient, token, baseModel, translated, true, opts.Alt, baseURL, bodyBytes)
-							if creditsResp != nil {
-								httpResp = creditsResp
-								helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-							}
+						if useCredits && antigravityShouldDisableCredits(httpResp.StatusCode, bodyBytes) {
+							markAntigravityCreditsPermanentlyDisabled(auth)
 						}
 					}
 				}
@@ -1369,6 +1236,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	translated = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, "antigravity", "request", translated, originalTranslated, requestedModel)
+	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
@@ -1383,11 +1251,10 @@ attemptLoop:
 
 		for idx, baseURL := range baseURLs {
 			requestPayload := translated
-			usedCreditsDirect := false
-			if antigravityCreditsRetryEnabled(e.cfg) && antigravityShouldPreferCredits(auth, baseModel, time.Now()) {
+			if useCredits {
 				if creditsPayload := injectEnabledCreditTypes(translated); len(creditsPayload) > 0 {
 					requestPayload = creditsPayload
-					usedCreditsDirect = true
+					helps.MarkCreditsUsed(ctx)
 				}
 			}
 			httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL)
@@ -1457,18 +1324,11 @@ attemptLoop:
 					case antigravity429DecisionShortCooldownSwitchAuth:
 						if decision.retryAfter != nil && *decision.retryAfter > 0 {
 							markAntigravityShortCooldown(auth, baseModel, time.Now(), *decision.retryAfter)
-							log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown and skipping credits fallback", *decision.retryAfter, baseModel)
+							log.Debugf("antigravity executor: short quota cooldown (%s) for model %s, recorded cooldown", *decision.retryAfter, baseModel)
 						}
 					case antigravity429DecisionFullQuotaExhausted:
-						if usedCreditsDirect {
-							clearAntigravityPreferCredits(auth, baseModel)
-							recordAntigravityCreditsFailure(auth, time.Now())
-						} else {
-							creditsResp, _ := e.attemptCreditsFallback(ctx, auth, httpClient, token, baseModel, translated, true, opts.Alt, baseURL, bodyBytes)
-							if creditsResp != nil {
-								httpResp = creditsResp
-								helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-							}
+						if useCredits && antigravityShouldDisableCredits(httpResp.StatusCode, bodyBytes) {
+							markAntigravityCreditsPermanentlyDisabled(auth)
 						}
 					}
 				}
@@ -1762,6 +1622,7 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	accessToken := metaStringValue(auth.Metadata, "access_token")
 	expiry := tokenExpiry(auth.Metadata)
 	if accessToken != "" && expiry.After(time.Now().Add(refreshSkew)) {
+		e.maybeRefreshAntigravityCreditsHint(ctx, auth, accessToken)
 		return accessToken, nil, nil
 	}
 	refreshCtx := context.Background()
@@ -1775,6 +1636,62 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 		return "", nil, errRefresh
 	}
 	return metaStringValue(updated.Metadata, "access_token"), updated, nil
+}
+
+func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) {
+	if e == nil || auth == nil || !antigravityCreditsRetryEnabled(e.cfg) {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		return
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		accessToken = metaStringValue(auth.Metadata, "access_token")
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return
+	}
+
+	state := &antigravityCreditsHintRefreshState{}
+	if existing, loaded := antigravityCreditsHintRefreshByID.LoadOrStore(authID, state); loaded {
+		if cast, ok := existing.(*antigravityCreditsHintRefreshState); ok && cast != nil {
+			state = cast
+		} else {
+			antigravityCreditsHintRefreshByID.Delete(authID)
+			antigravityCreditsHintRefreshByID.Store(authID, state)
+		}
+	}
+
+	now := time.Now()
+	if !state.mu.TryLock() {
+		return
+	}
+	if !state.lastAttempt.IsZero() && now.Sub(state.lastAttempt) < antigravityCreditsHintRefreshInterval {
+		state.mu.Unlock()
+		return
+	}
+	state.lastAttempt = now
+
+	refreshCtx := context.Background()
+	if ctx != nil {
+		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
+		}
+	}
+	refreshCtx, cancel := context.WithTimeout(refreshCtx, antigravityCreditsHintRefreshTimeout)
+	authCopy := auth.Clone()
+
+	go func(state *antigravityCreditsHintRefreshState, auth *cliproxyauth.Auth, token string) {
+		defer cancel()
+		defer state.mu.Unlock()
+		if !e.updateAntigravityCreditsBalance(refreshCtx, auth, token) {
+			state.lastAttempt = time.Time{}
+		}
+	}(state, authCopy, accessToken)
 }
 
 func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -1852,6 +1769,18 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
 		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
+	refreshCtx := context.Background()
+	if ctx != nil {
+		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
+		}
+	}
+	refreshCtx, cancel := context.WithTimeout(refreshCtx, antigravityCreditsHintRefreshTimeout)
+	authCopy := auth.Clone()
+	go func() {
+		defer cancel()
+		e.updateAntigravityCreditsBalance(refreshCtx, authCopy, tokenResp.AccessToken)
+	}()
 	return auth, nil
 }
 
@@ -1886,6 +1815,103 @@ func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, au
 	auth.Metadata["project_id"] = strings.TrimSpace(projectID)
 
 	return nil
+}
+
+func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) bool {
+	if auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return false
+	}
+	token := strings.TrimSpace(accessToken)
+	if token == "" {
+		token = metaStringValue(auth.Metadata, "access_token")
+	}
+	if token == "" {
+		return false
+	}
+
+	loadReqBody := `{"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}`
+	endpointURL := "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, strings.NewReader(loadReqBody))
+	if errReq != nil {
+		log.Debugf("antigravity executor: create loadCodeAssist request error: %v", errReq)
+		return false
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", "google-api-nodejs-client/9.15.1")
+
+	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, errDo := httpClient.Do(httpReq)
+	if errDo != nil {
+		log.Debugf("antigravity executor: loadCodeAssist request error: %v", errDo)
+		return false
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("antigravity executor: close loadCodeAssist response body error: %v", errClose)
+		}
+	}()
+
+	bodyBytes, errRead := io.ReadAll(httpResp.Body)
+	if errRead != nil || httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Debugf("antigravity executor: loadCodeAssist returned status %d, err=%v", httpResp.StatusCode, errRead)
+		return false
+	}
+
+	authID := strings.TrimSpace(auth.ID)
+	paidTierID := strings.TrimSpace(gjson.GetBytes(bodyBytes, "paidTier.id").String())
+
+	credits := gjson.GetBytes(bodyBytes, "paidTier.availableCredits")
+	if !credits.IsArray() {
+		antigravityCreditsBalanceByAuth.Delete(authID)
+		cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
+			Known:      true,
+			Available:  false,
+			PaidTierID: paidTierID,
+			UpdatedAt:  time.Now(),
+		})
+		return true
+	}
+	for _, credit := range credits.Array() {
+		if !strings.EqualFold(credit.Get("creditType").String(), "GOOGLE_ONE_AI") {
+			continue
+		}
+		creditAmount, errCA := strconv.ParseFloat(strings.TrimSpace(credit.Get("creditAmount").String()), 64)
+		if errCA != nil {
+			continue
+		}
+		minAmount, errMA := strconv.ParseFloat(strings.TrimSpace(credit.Get("minimumCreditAmountForUsage").String()), 64)
+		if errMA != nil {
+			continue
+		}
+		bal := antigravityCreditsBalance{
+			CreditAmount:    creditAmount,
+			MinCreditAmount: minAmount,
+			PaidTierID:      paidTierID,
+			Known:           true,
+		}
+		antigravityCreditsBalanceByAuth.Store(authID, bal)
+		cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
+			Known:           true,
+			Available:       creditAmount >= minAmount,
+			CreditAmount:    creditAmount,
+			MinCreditAmount: minAmount,
+			PaidTierID:      paidTierID,
+			UpdatedAt:       time.Now(),
+		})
+		if creditAmount >= minAmount {
+			clearAntigravityCreditsPermanentlyDisabled(auth)
+		}
+		return true
+	}
+	antigravityCreditsBalanceByAuth.Delete(authID)
+	cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
+		Known:      true,
+		Available:  false,
+		PaidTierID: paidTierID,
+		UpdatedAt:  time.Now(),
+	})
+	return true
 }
 
 func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string) (*http.Request, error) {
