@@ -3,7 +3,37 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
+
+type stoppableSelectorStub struct {
+	stops int
+}
+
+func (s *stoppableSelectorStub) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	return nil, nil
+}
+
+func (s *stoppableSelectorStub) Stop() {
+	s.stops++
+}
+
+type nonComparableSelectorStub struct {
+	stops *int
+	tags  []string
+}
+
+func (s nonComparableSelectorStub) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	return nil, nil
+}
+
+func (s nonComparableSelectorStub) Stop() {
+	if s.stops != nil {
+		*s.stops++
+	}
+}
 
 func TestManager_Update_PreservesModelStates(t *testing.T) {
 	m := NewManager(nil, nil, nil)
@@ -200,5 +230,125 @@ func TestManager_Update_ActiveInheritsModelStates(t *testing.T) {
 	}
 	if state.Quota.BackoffLevel != backoffLevel {
 		t.Fatalf("expected BackoffLevel to be %d, got %d", backoffLevel, state.Quota.BackoffLevel)
+	}
+}
+
+func TestManager_SetSelector_StopsPreviousStoppableSelector(t *testing.T) {
+	previous := &stoppableSelectorStub{}
+	manager := NewManager(nil, previous, nil)
+
+	manager.SetSelector(&RoundRobinSelector{})
+
+	if previous.stops != 1 {
+		t.Fatalf("previous selector stop count = %d, want 1", previous.stops)
+	}
+}
+
+func TestManager_SetSelector_NonComparableSelectorDoesNotPanic(t *testing.T) {
+	stops := 0
+	previous := nonComparableSelectorStub{stops: &stops, tags: []string{"previous"}}
+	manager := NewManager(nil, previous, nil)
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("SetSelector() panicked with non-comparable selector: %v", recovered)
+		}
+	}()
+
+	manager.SetSelector(nonComparableSelectorStub{stops: &stops, tags: []string{"next"}})
+
+	if stops != 1 {
+		t.Fatalf("non-comparable previous selector stop count = %d, want 1", stops)
+	}
+}
+
+func TestManager_SetSelector_SessionAffinityPreservesBindings(t *testing.T) {
+	previous := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Hour,
+	})
+	manager := NewManager(nil, previous, nil)
+
+	auths := []*Auth{
+		{ID: "auth-a", Provider: "codex"},
+		{ID: "auth-b", Provider: "codex"},
+	}
+	opts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"metadata":{"user_id":"session-transfer-test"}}`),
+	}
+
+	first, errPick := previous.Pick(context.Background(), "codex", "gpt-5.4", opts, auths)
+	if errPick != nil {
+		t.Fatalf("previous.Pick() error = %v", errPick)
+	}
+	if first == nil {
+		t.Fatal("previous.Pick() returned nil auth")
+	}
+
+	cacheKey := "codex::user:session-transfer-test::gpt-5.4"
+	if entry, ok := previous.cache.GetEntry(cacheKey); !ok {
+		t.Fatalf("previous selector cache missing %q after initial Pick()", cacheKey)
+	} else if entry.authID != first.ID {
+		t.Fatalf("previous selector cache auth = %q, want %q", entry.authID, first.ID)
+	}
+
+	next := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback:                     &RoundRobinSelector{},
+		TTL:                          time.Hour,
+		CodexWebsocketStrictAffinity: true,
+	})
+
+	manager.SetSelector(next)
+
+	entry, ok := next.cache.GetEntry(cacheKey)
+	if !ok {
+		t.Fatalf("next selector cache missing %q after SetSelector()", cacheKey)
+	}
+	if entry.authID != first.ID {
+		t.Fatalf("next selector cache auth = %q, want %q", entry.authID, first.ID)
+	}
+}
+
+func TestManager_SetSelector_SessionAffinityRebasesBindingsToNewTTL(t *testing.T) {
+	previous := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Hour,
+	})
+	manager := NewManager(nil, previous, nil)
+
+	auths := []*Auth{
+		{ID: "auth-a", Provider: "codex"},
+		{ID: "auth-b", Provider: "codex"},
+	}
+	opts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"metadata":{"user_id":"session-transfer-ttl-test"}}`),
+	}
+
+	first, errPick := previous.Pick(context.Background(), "codex", "gpt-5.4", opts, auths)
+	if errPick != nil {
+		t.Fatalf("previous.Pick() error = %v", errPick)
+	}
+	if first == nil {
+		t.Fatal("previous.Pick() returned nil auth")
+	}
+
+	next := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      2 * time.Second,
+	})
+
+	manager.SetSelector(next)
+
+	cacheKey := "codex::user:session-transfer-ttl-test::gpt-5.4"
+	next.cache.mu.RLock()
+	entry, ok := next.cache.entries[cacheKey]
+	next.cache.mu.RUnlock()
+	if !ok {
+		t.Fatalf("next selector cache missing %q after SetSelector()", cacheKey)
+	}
+
+	remaining := time.Until(entry.expiresAt)
+	if remaining <= time.Second || remaining > 5*time.Second {
+		t.Fatalf("transferred binding remaining TTL = %s, want rebased to about 2s", remaining)
 	}
 }

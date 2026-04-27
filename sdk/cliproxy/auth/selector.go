@@ -437,12 +437,88 @@ var sessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 type SessionAffinitySelector struct {
 	fallback Selector
 	cache    *SessionCache
+
+	codexWebsocketStrictAffinity bool
 }
 
 // SessionAffinityConfig configures the session affinity selector.
 type SessionAffinityConfig struct {
 	Fallback Selector
 	TTL      time.Duration
+
+	CodexWebsocketStrictAffinity bool
+}
+
+type sessionAffinityCandidateSet struct {
+	selectable []*Auth
+	inspection []*Auth
+}
+
+type sessionAffinityCandidatesContextKey struct{}
+
+type strictBoundAuthError struct {
+	cause      error
+	authID     string
+	retryAfter *time.Duration
+}
+
+func (e *strictBoundAuthError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *strictBoundAuthError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *strictBoundAuthError) StatusCode() int {
+	if e == nil || e.cause == nil {
+		return 0
+	}
+	type statusCoder interface {
+		StatusCode() int
+	}
+	if sc, ok := e.cause.(statusCoder); ok {
+		return sc.StatusCode()
+	}
+	return 0
+}
+
+func (e *strictBoundAuthError) Headers() http.Header {
+	if e == nil || e.cause == nil {
+		return nil
+	}
+	type headerProvider interface {
+		Headers() http.Header
+	}
+	if hp, ok := e.cause.(headerProvider); ok {
+		return hp.Headers()
+	}
+	return nil
+}
+
+func (e *strictBoundAuthError) RetryAfter() *time.Duration {
+	if e == nil || e.retryAfter == nil {
+		return nil
+	}
+	retryAfter := *e.retryAfter
+	return &retryAfter
+}
+
+func (e *strictBoundAuthError) BoundAuthStrictFailure() bool {
+	return true
+}
+
+func (e *strictBoundAuthError) BoundAuthID() string {
+	if e == nil {
+		return ""
+	}
+	return e.authID
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -462,9 +538,188 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 		cfg.TTL = time.Hour
 	}
 	return &SessionAffinitySelector{
-		fallback: cfg.Fallback,
-		cache:    NewSessionCache(cfg.TTL),
+		fallback:                     cfg.Fallback,
+		cache:                        NewSessionCache(cfg.TTL),
+		codexWebsocketStrictAffinity: cfg.CodexWebsocketStrictAffinity,
 	}
+}
+
+func boundAuthProviderKey(auths []*Auth, authID, provider, cachedProvider string) string {
+	providerKey := strings.TrimSpace(provider)
+	for _, auth := range auths {
+		if auth == nil || auth.ID != authID {
+			continue
+		}
+		if strings.EqualFold(providerKey, "mixed") {
+			providerKey = strings.TrimSpace(auth.Provider)
+		}
+		break
+	}
+	if strings.EqualFold(providerKey, "mixed") {
+		providerKey = strings.TrimSpace(cachedProvider)
+	}
+	if strings.EqualFold(providerKey, "mixed") {
+		return ""
+	}
+	return providerKey
+}
+
+func (s *SessionAffinitySelector) strictCodexWebsocketAffinity(ctx context.Context, auths []*Auth, authID, provider, cachedProvider string) bool {
+	if s == nil || !s.codexWebsocketStrictAffinity {
+		return false
+	}
+	if !cliproxyexecutor.DownstreamWebsocket(ctx) {
+		return false
+	}
+	return strings.EqualFold(boundAuthProviderKey(auths, authID, provider, cachedProvider), "codex")
+}
+
+func withSessionAffinityCandidates(ctx context.Context, selectable, inspection []*Auth) context.Context {
+	if len(selectable) == 0 && len(inspection) == 0 {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, sessionAffinityCandidatesContextKey{}, sessionAffinityCandidateSet{
+		selectable: selectable,
+		inspection: inspection,
+	})
+}
+
+func sessionAffinityCandidateSetFromContext(ctx context.Context) (sessionAffinityCandidateSet, bool) {
+	if ctx == nil {
+		return sessionAffinityCandidateSet{}, false
+	}
+	candidates, ok := ctx.Value(sessionAffinityCandidatesContextKey{}).(sessionAffinityCandidateSet)
+	return candidates, ok
+}
+
+func findReusableBoundAuth(auths []*Auth, authID, model string, now time.Time) *Auth {
+	for _, auth := range auths {
+		if auth == nil || auth.ID != authID {
+			continue
+		}
+		blocked, _, _ := isAuthBlockedForModel(auth, model, now)
+		if blocked {
+			return nil
+		}
+		return auth
+	}
+	return nil
+}
+
+func boundAuthUnavailableError(auths []*Auth, authID, provider, cachedProvider, model string, now time.Time) error {
+	providerForError := boundAuthProviderKey(auths, authID, provider, cachedProvider)
+	for _, auth := range auths {
+		if auth == nil || auth.ID != authID {
+			continue
+		}
+		blocked, reason, next := isAuthBlockedForModel(auth, model, now)
+		if !blocked {
+			return &strictBoundAuthError{cause: boundAuthFailureCause(auth, model), authID: authID}
+		}
+		if reason == blockReasonCooldown {
+			retryAfter := next.Sub(now)
+			return &strictBoundAuthError{
+				cause:      newModelCooldownError(model, providerForError, retryAfter),
+				authID:     authID,
+				retryAfter: &retryAfter,
+			}
+		}
+		strictErr := &strictBoundAuthError{cause: boundAuthFailureCause(auth, model), authID: authID}
+		if !next.IsZero() {
+			retryAfter := next.Sub(now)
+			if retryAfter < 0 {
+				retryAfter = 0
+			}
+			strictErr.retryAfter = &retryAfter
+		}
+		return strictErr
+	}
+	return &strictBoundAuthError{
+		cause:  &Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable},
+		authID: authID,
+	}
+}
+
+func boundAuthFailureCause(auth *Auth, model string) error {
+	if auth == nil {
+		return &Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
+	}
+
+	if model != "" && len(auth.ModelStates) > 0 {
+		state, ok := auth.ModelStates[model]
+		if (!ok || state == nil) && model != "" {
+			baseModel := canonicalModelKey(model)
+			if baseModel != "" && baseModel != model {
+				state, ok = auth.ModelStates[baseModel]
+			}
+		}
+		if ok && state != nil {
+			if state.LastError != nil {
+				return cloneError(state.LastError)
+			}
+			if msg := strings.TrimSpace(state.StatusMessage); msg != "" {
+				return &Error{Code: "auth_unavailable", Message: msg, HTTPStatus: http.StatusServiceUnavailable}
+			}
+			return &Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
+		}
+	}
+
+	if auth.LastError != nil {
+		return cloneError(auth.LastError)
+	}
+
+	return &Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
+}
+
+func (s *SessionAffinitySelector) strictBoundAuthFailure(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) error {
+	if s == nil {
+		return nil
+	}
+	primaryID, fallbackID := extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	if primaryID == "" {
+		return nil
+	}
+
+	now := time.Now()
+	cacheKey := provider + "::" + primaryID + "::" + model
+	selectableAuths := auths
+	inspectionAuths := auths
+	if candidateSet, ok := sessionAffinityCandidateSetFromContext(ctx); ok {
+		if len(candidateSet.selectable) > 0 {
+			selectableAuths = candidateSet.selectable
+		}
+		if len(candidateSet.inspection) > 0 {
+			inspectionAuths = candidateSet.inspection
+		}
+	}
+
+	if cachedEntry, ok := s.cache.GetEntryAndRefresh(cacheKey); ok {
+		if auth := findReusableBoundAuth(selectableAuths, cachedEntry.authID, model, now); auth != nil {
+			return nil
+		}
+		if s.strictCodexWebsocketAffinity(ctx, inspectionAuths, cachedEntry.authID, provider, cachedEntry.provider) {
+			return boundAuthUnavailableError(inspectionAuths, cachedEntry.authID, provider, cachedEntry.provider, model, now)
+		}
+		return nil
+	}
+
+	if fallbackID != "" && fallbackID != primaryID {
+		fallbackKey := provider + "::" + fallbackID + "::" + model
+		if cachedEntry, ok := s.cache.GetEntry(fallbackKey); ok {
+			if auth := findReusableBoundAuth(inspectionAuths, cachedEntry.authID, model, now); auth != nil {
+				return nil
+			}
+			if s.strictCodexWebsocketAffinity(ctx, inspectionAuths, cachedEntry.authID, provider, cachedEntry.provider) {
+				s.cache.SetWithProvider(cacheKey, cachedEntry.authID, cachedEntry.provider)
+				return boundAuthUnavailableError(inspectionAuths, cachedEntry.authID, provider, cachedEntry.provider, model, now)
+			}
+		}
+	}
+
+	return nil
 }
 
 // Pick selects an auth with session affinity when possible.
@@ -487,39 +742,51 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
-	if err != nil {
-		return nil, err
+	cacheKey := provider + "::" + primaryID + "::" + model
+	selectableAuths := auths
+	inspectionAuths := auths
+	if candidateSet, ok := sessionAffinityCandidateSetFromContext(ctx); ok {
+		if len(candidateSet.selectable) > 0 {
+			selectableAuths = candidateSet.selectable
+		}
+		if len(candidateSet.inspection) > 0 {
+			inspectionAuths = candidateSet.inspection
+		}
 	}
 
-	cacheKey := provider + "::" + primaryID + "::" + model
-
-	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
-		for _, auth := range available {
-			if auth.ID == cachedAuthID {
-				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
-				return auth, nil
-			}
+	if cachedEntry, ok := s.cache.GetEntryAndRefresh(cacheKey); ok {
+		cachedAuthID := cachedEntry.authID
+		if auth := findReusableBoundAuth(selectableAuths, cachedAuthID, model, now); auth != nil {
+			entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+			return auth, nil
+		}
+		if s.strictCodexWebsocketAffinity(ctx, inspectionAuths, cachedAuthID, provider, cachedEntry.provider) {
+			entry.Infof("session-affinity: cache hit but bound auth unavailable; strict codex websocket affinity blocks failover | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, provider, model)
+			return nil, boundAuthUnavailableError(inspectionAuths, cachedAuthID, provider, cachedEntry.provider, model, now)
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
 		auth, err := s.fallback.Pick(ctx, provider, model, opts, auths)
 		if err != nil {
 			return nil, err
 		}
-		s.cache.Set(cacheKey, auth.ID)
+		s.cache.SetWithProvider(cacheKey, auth.ID, strings.TrimSpace(auth.Provider))
 		entry.Infof("session-affinity: cache hit but auth unavailable, reselected | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 		return auth, nil
 	}
 
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey := provider + "::" + fallbackID + "::" + model
-		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
-			for _, auth := range available {
-				if auth.ID == cachedAuthID {
-					s.cache.Set(cacheKey, auth.ID)
-					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
-					return auth, nil
-				}
+		if cachedEntry, ok := s.cache.GetEntry(fallbackKey); ok {
+			cachedAuthID := cachedEntry.authID
+			if auth := findReusableBoundAuth(selectableAuths, cachedAuthID, model, now); auth != nil {
+				s.cache.SetWithProvider(cacheKey, auth.ID, strings.TrimSpace(auth.Provider))
+				entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
+				return auth, nil
+			}
+			if s.strictCodexWebsocketAffinity(ctx, inspectionAuths, cachedAuthID, provider, cachedEntry.provider) {
+				s.cache.SetWithProvider(cacheKey, cachedAuthID, cachedEntry.provider)
+				entry.Infof("session-affinity: fallback cache hit but bound auth unavailable; strict codex websocket affinity blocks failover | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, provider, model)
+				return nil, boundAuthUnavailableError(inspectionAuths, cachedAuthID, provider, cachedEntry.provider, model, now)
 			}
 		}
 	}
@@ -528,7 +795,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil {
 		return nil, err
 	}
-	s.cache.Set(cacheKey, auth.ID)
+	s.cache.SetWithProvider(cacheKey, auth.ID, strings.TrimSpace(auth.Provider))
 	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 	return auth, nil
 }
