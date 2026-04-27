@@ -903,6 +903,12 @@ func parseRetryDelay(errorBody []byte) (*time.Duration, error) {
 				return &duration, nil
 			}
 		}
+		reHuman := regexp.MustCompile(`after\s+((?:\d+h)?(?:\d+m)?(?:\d+s)?)\.?`)
+		if matches := reHuman.FindStringSubmatch(strings.ToLower(message)); len(matches) > 1 {
+			if duration, err := time.ParseDuration(matches[1]); err == nil && duration > 0 {
+				return &duration, nil
+			}
+		}
 	}
 
 	return nil, fmt.Errorf("no RetryInfo found")
