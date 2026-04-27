@@ -157,6 +157,51 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 	}
 }
 
+func TestAPICallTransportAPIKeyAuth_SkipsDisabledOpenAICompatProxyURL(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
+			OpenAICompatibility: []config.OpenAICompatibility{{
+				Name:     "bohe",
+				BaseURL:  "https://bohe.example.com",
+				Disabled: true,
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
+					APIKey:   "compat-key",
+					ProxyURL: "http://compat-proxy.example.com:8080",
+				}},
+			}},
+		},
+	}
+
+	transport := h.apiCallTransport(&coreauth.Auth{
+		Provider: "bohe",
+		Attributes: map[string]string{
+			"api_key":      "compat-key",
+			"compat_name":  "bohe",
+			"provider_key": "bohe",
+		},
+	})
+	httpTransport, ok := transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", transport)
+	}
+
+	req, errRequest := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	if errRequest != nil {
+		t.Fatalf("http.NewRequest returned error: %v", errRequest)
+	}
+
+	proxyURL, errProxy := httpTransport.Proxy(req)
+	if errProxy != nil {
+		t.Fatalf("httpTransport.Proxy returned error: %v", errProxy)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://global-proxy.example.com:8080" {
+		t.Fatalf("proxy URL = %v, want http://global-proxy.example.com:8080", proxyURL)
+	}
+}
+
 func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	t.Parallel()
 
@@ -208,5 +253,31 @@ func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	}
 	if gotCompat.ID != compatAuth.ID {
 		t.Fatalf("authByIndex(compat) returned %q, want %q", gotCompat.ID, compatAuth.ID)
+	}
+}
+
+func TestAuthByIndexSkipsDisabledAuths(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	disabledAuth := &coreauth.Auth{
+		ID:       "openai-compatibility:disabled:123",
+		Provider: "disabled",
+		Disabled: true,
+		Status:   coreauth.StatusDisabled,
+		Attributes: map[string]string{
+			"api_key":      "disabled-key",
+			"compat_name":  "disabled",
+			"provider_key": "disabled",
+		},
+	}
+
+	if _, errRegister := manager.Register(context.Background(), disabledAuth); errRegister != nil {
+		t.Fatalf("register disabled auth: %v", errRegister)
+	}
+
+	h := &Handler{authManager: manager}
+	if got := h.authByIndex(disabledAuth.EnsureIndex()); got != nil {
+		t.Fatalf("expected disabled auth to be skipped, got %q", got.ID)
 	}
 }
