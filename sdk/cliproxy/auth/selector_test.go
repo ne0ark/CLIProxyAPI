@@ -1002,6 +1002,38 @@ func TestExtractSessionID_Headers(t *testing.T) {
 	}
 }
 
+func TestExtractSessionID_AdditionalHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		headerName  string
+		headerValue string
+	}{
+		{name: "XClientRequestID", headerName: "X-Client-Request-Id", headerValue: "client-request-123"},
+		{name: "SessionID", headerName: "Session-Id", headerValue: "session-123"},
+		{name: "SessionIDUnderscore", headerName: "Session_id", headerValue: "session-underscore-123"},
+		{name: "ConversationID", headerName: "Conversation-Id", headerValue: "conversation-123"},
+		{name: "ConversationIDUnderscore", headerName: "Conversation_id", headerValue: "conversation-underscore-123"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			headers := make(http.Header)
+			headers.Set(tt.headerName, tt.headerValue)
+
+			got := ExtractSessionID(headers, nil, nil)
+			want := "header:" + tt.headerValue
+			if got != want {
+				t.Errorf("ExtractSessionID() with %s = %q, want %q", tt.headerName, got, want)
+			}
+		})
+	}
+}
+
 func TestExtractSessionID_AmpThreadId(t *testing.T) {
 	t.Parallel()
 
@@ -1036,6 +1068,34 @@ func TestExtractSessionID_AmpThreadIdPriority(t *testing.T) {
 	if got2 != want2 {
 		t.Errorf("ExtractSessionID() = %q, want %q (Claude Code should take priority over Amp thread ID)", got2, want2)
 	}
+}
+
+func TestExtractSessionID_PromptCacheKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("UsedWhenConversationIDMissing", func(t *testing.T) {
+		t.Parallel()
+
+		payload := []byte(`{"prompt_cache_key":"prompt-cache-key-123"}`)
+
+		got := ExtractSessionID(nil, payload, nil)
+		want := "pck:prompt-cache-key-123"
+		if got != want {
+			t.Errorf("ExtractSessionID() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ConversationIDTakesPriority", func(t *testing.T) {
+		t.Parallel()
+
+		payload := []byte(`{"conversation_id":"conv-123","prompt_cache_key":"prompt-cache-key-123"}`)
+
+		got := ExtractSessionID(nil, payload, nil)
+		want := "conv:conv-123"
+		if got != want {
+			t.Errorf("ExtractSessionID() = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestExtractSessionID_IdempotencyKey verifies that idempotency_key is intentionally
@@ -1373,6 +1433,451 @@ func TestSessionAffinitySelector_AmpThreadIdInheritsConversationBinding(t *testi
 	}
 	if second.ID != first.ID {
 		t.Fatalf("Amp thread ID should inherit conversation binding: got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestSessionAffinitySelector_ConversationIDHeaderInheritsConversationBinding(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a"},
+		{ID: "auth-b"},
+	}
+
+	firstOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"conversation_id":"conv-12345"}`),
+	}
+	first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", firstOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() initial conversation binding error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("Pick() initial conversation binding returned nil auth")
+	}
+
+	secondOpts := cliproxyexecutor.Options{
+		Headers: http.Header{"Conversation-Id": []string{"conv-12345"}},
+	}
+	second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", secondOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() Conversation-Id inheritance error = %v", err)
+	}
+	if second == nil {
+		t.Fatal("Pick() Conversation-Id inheritance returned nil auth")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("Conversation-Id header should inherit conversation binding: got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestSessionAffinitySelector_ConversationIDUnderscoreHeaderInheritsConversationBinding(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a"},
+		{ID: "auth-b"},
+	}
+
+	firstOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"conversation_id":"conv-12345"}`),
+	}
+	first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", firstOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() initial conversation binding error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("Pick() initial conversation binding returned nil auth")
+	}
+
+	secondOpts := cliproxyexecutor.Options{
+		Headers: http.Header{"Conversation_id": []string{"conv-12345"}},
+	}
+	second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", secondOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() Conversation_id inheritance error = %v", err)
+	}
+	if second == nil {
+		t.Fatal("Pick() Conversation_id inheritance returned nil auth")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("Conversation_id header should inherit conversation binding: got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestSessionAffinitySelector_ConversationIDInheritsConversationHeaderBinding(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a"},
+		{ID: "auth-b"},
+	}
+
+	firstOpts := cliproxyexecutor.Options{
+		Headers: http.Header{"Conversation_id": []string{"conv-12345"}},
+	}
+	first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", firstOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() initial conversation header binding error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("Pick() initial conversation header binding returned nil auth")
+	}
+
+	secondOpts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"conversation_id":"conv-12345"}`),
+	}
+	second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", secondOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() conversation_id inheritance error = %v", err)
+	}
+	if second == nil {
+		t.Fatal("Pick() conversation_id inheritance returned nil auth")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("conversation_id body should inherit Conversation_id header binding: got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestSessionAffinitySelector_XClientRequestIDStickyBinding(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a"},
+		{ID: "auth-b"},
+	}
+
+	headers := http.Header{"X-Client-Request-Id": []string{"client-request-123"}}
+	firstOpts := cliproxyexecutor.Options{Headers: headers.Clone()}
+	first, err := selector.Pick(context.Background(), "codex", "gpt-5.4", firstOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() first header binding error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("Pick() first header binding returned nil auth")
+	}
+
+	secondOpts := cliproxyexecutor.Options{Headers: headers.Clone()}
+	second, err := selector.Pick(context.Background(), "codex", "gpt-5.4", secondOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() second header binding error = %v", err)
+	}
+	if second == nil {
+		t.Fatal("Pick() second header binding returned nil auth")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("X-Client-Request-Id should keep the same auth binding: got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestSessionAffinitySelector_StableSessionIDsBeatChangingClientRequestIDs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		firstOpts  cliproxyexecutor.Options
+		secondOpts cliproxyexecutor.Options
+	}{
+		{
+			name: "SessionIDUnderscoreHeader",
+			firstOpts: cliproxyexecutor.Options{
+				Headers: http.Header{
+					"X-Client-Request-Id": []string{"request-1"},
+					"Session_id":          []string{"stable-session-123"},
+				},
+			},
+			secondOpts: cliproxyexecutor.Options{
+				Headers: http.Header{
+					"X-Client-Request-Id": []string{"request-2"},
+					"Session_id":          []string{"stable-session-123"},
+				},
+			},
+		},
+		{
+			name: "PromptCacheKeyBody",
+			firstOpts: cliproxyexecutor.Options{
+				Headers:         http.Header{"X-Client-Request-Id": []string{"request-1"}},
+				OriginalRequest: []byte(`{"prompt_cache_key":"stable-cache-123"}`),
+			},
+			secondOpts: cliproxyexecutor.Options{
+				Headers:         http.Header{"X-Client-Request-Id": []string{"request-2"}},
+				OriginalRequest: []byte(`{"prompt_cache_key":"stable-cache-123"}`),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+				Fallback: &RoundRobinSelector{},
+				TTL:      time.Minute,
+			})
+			defer selector.Stop()
+
+			auths := []*Auth{
+				{ID: "auth-a"},
+				{ID: "auth-b"},
+			}
+
+			first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", tt.firstOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() first stable-session binding error = %v", err)
+			}
+			if first == nil {
+				t.Fatal("Pick() first stable-session binding returned nil auth")
+			}
+
+			second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", tt.secondOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() second stable-session binding error = %v", err)
+			}
+			if second == nil {
+				t.Fatal("Pick() second stable-session binding returned nil auth")
+			}
+			if second.ID != first.ID {
+				t.Fatalf("Stable session identifiers should win over changing X-Client-Request-Id values: got %s want %s", second.ID, first.ID)
+			}
+		})
+	}
+}
+
+func TestSessionAffinitySelector_PromptCacheKeyInheritsMessageHashBinding(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{
+		{ID: "auth-a"},
+		{ID: "auth-b"},
+	}
+
+	firstTurnPayload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	firstOpts := cliproxyexecutor.Options{OriginalRequest: firstTurnPayload}
+	first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", firstOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() first-turn message hash binding error = %v", err)
+	}
+	if first == nil {
+		t.Fatal("Pick() first-turn message hash binding returned nil auth")
+	}
+
+	secondTurnPayload := []byte(`{"prompt_cache_key":"prompt-cache-key-123","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"continue"}]}`)
+	secondOpts := cliproxyexecutor.Options{OriginalRequest: secondTurnPayload}
+	second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", secondOpts, auths)
+	if err != nil {
+		t.Fatalf("Pick() prompt_cache_key inheritance error = %v", err)
+	}
+	if second == nil {
+		t.Fatal("Pick() prompt_cache_key inheritance returned nil auth")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("prompt_cache_key should inherit the prior message-hash binding: got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestSessionAffinitySelector_ConversationAndPromptCacheKeyStayBound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		firstOpts  cliproxyexecutor.Options
+		secondOpts cliproxyexecutor.Options
+	}{
+		{
+			name: "ConversationIDThenPromptCacheKey",
+			firstOpts: cliproxyexecutor.Options{
+				OriginalRequest: []byte(`{"conversation_id":"shared-session-123"}`),
+			},
+			secondOpts: cliproxyexecutor.Options{
+				OriginalRequest: []byte(`{"prompt_cache_key":"shared-session-123"}`),
+			},
+		},
+		{
+			name: "PromptCacheKeyThenConversationID",
+			firstOpts: cliproxyexecutor.Options{
+				OriginalRequest: []byte(`{"prompt_cache_key":"shared-session-123"}`),
+			},
+			secondOpts: cliproxyexecutor.Options{
+				OriginalRequest: []byte(`{"conversation_id":"shared-session-123"}`),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+				Fallback: &RoundRobinSelector{},
+				TTL:      time.Minute,
+			})
+			defer selector.Stop()
+
+			auths := []*Auth{
+				{ID: "auth-a"},
+				{ID: "auth-b"},
+			}
+
+			first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", tt.firstOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() initial binding error = %v", err)
+			}
+			if first == nil {
+				t.Fatal("Pick() initial binding returned nil auth")
+			}
+
+			second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", tt.secondOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() follow-up binding error = %v", err)
+			}
+			if second == nil {
+				t.Fatal("Pick() follow-up binding returned nil auth")
+			}
+			if second.ID != first.ID {
+				t.Fatalf("conversation_id and prompt_cache_key should share affinity binding: got %s want %s", second.ID, first.ID)
+			}
+		})
+	}
+}
+
+func TestSessionAffinitySelector_HeaderAliasesInheritPromptCacheKeyBinding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		headerName string
+	}{
+		{name: "SessionIDUnderscore", headerName: "Session_id"},
+		{name: "ConversationIDUnderscore", headerName: "Conversation_id"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+				Fallback: &RoundRobinSelector{},
+				TTL:      time.Minute,
+			})
+			defer selector.Stop()
+
+			auths := []*Auth{
+				{ID: "auth-a"},
+				{ID: "auth-b"},
+			}
+
+			firstOpts := cliproxyexecutor.Options{
+				OriginalRequest: []byte(`{"prompt_cache_key":"cache-key-123"}`),
+			}
+			first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", firstOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() prompt_cache_key binding error = %v", err)
+			}
+			if first == nil {
+				t.Fatal("Pick() prompt_cache_key binding returned nil auth")
+			}
+
+			secondOpts := cliproxyexecutor.Options{
+				Headers: http.Header{tt.headerName: []string{"cache-key-123"}},
+			}
+			second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", secondOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() %s inheritance error = %v", tt.headerName, err)
+			}
+			if second == nil {
+				t.Fatalf("Pick() %s inheritance returned nil auth", tt.headerName)
+			}
+			if second.ID != first.ID {
+				t.Fatalf("%s should inherit prompt_cache_key binding: got %s want %s", tt.headerName, second.ID, first.ID)
+			}
+		})
+	}
+}
+
+func TestSessionAffinitySelector_PromptCacheKeyInheritsHeaderAliasBinding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		headerName string
+	}{
+		{name: "SessionIDUnderscore", headerName: "Session_id"},
+		{name: "ConversationIDUnderscore", headerName: "Conversation_id"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+				Fallback: &RoundRobinSelector{},
+				TTL:      time.Minute,
+			})
+			defer selector.Stop()
+
+			auths := []*Auth{
+				{ID: "auth-a"},
+				{ID: "auth-b"},
+			}
+
+			firstOpts := cliproxyexecutor.Options{
+				Headers: http.Header{tt.headerName: []string{"cache-key-123"}},
+			}
+			first, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", firstOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() %s binding error = %v", tt.headerName, err)
+			}
+			if first == nil {
+				t.Fatalf("Pick() %s binding returned nil auth", tt.headerName)
+			}
+
+			secondOpts := cliproxyexecutor.Options{
+				OriginalRequest: []byte(`{"prompt_cache_key":"cache-key-123"}`),
+			}
+			second, err := selector.Pick(context.Background(), "openai-response", "gpt-5.4", secondOpts, auths)
+			if err != nil {
+				t.Fatalf("Pick() prompt_cache_key inheritance error = %v", err)
+			}
+			if second == nil {
+				t.Fatal("Pick() prompt_cache_key inheritance returned nil auth")
+			}
+			if second.ID != first.ID {
+				t.Fatalf("prompt_cache_key should inherit %s binding: got %s want %s", tt.headerName, second.ID, first.ID)
+			}
+		})
 	}
 }
 

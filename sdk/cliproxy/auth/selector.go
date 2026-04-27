@@ -728,10 +728,12 @@ func (s *SessionAffinitySelector) strictBoundAuthFailure(ctx context.Context, pr
 // Pick selects an auth with session affinity when possible.
 // Priority for session ID extraction:
 //  1. metadata.user_id (Claude Code format) - highest priority
-//  2. X-Session-ID header
-//  3. metadata.user_id (non-Claude Code format)
-//  4. conversation_id field
-//  5. Hash-based fallback from messages
+//  2. X-Session-ID / Session-Id / Session_id / Conversation-Id / Conversation_id headers
+//  3. X-Amp-Thread-Id header (Amp CLI thread ID)
+//  4. metadata.user_id (non-Claude Code format)
+//  5. conversation_id or prompt_cache_key body field
+//  6. X-Client-Request-Id header (last resort)
+//  7. Hash-based fallback from messages
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
@@ -842,11 +844,12 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 // ExtractSessionID extracts session identifier from multiple sources.
 // Priority order:
 //  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority for Claude Code clients
-//  2. X-Session-ID header
+//  2. X-Session-ID / Session-Id / Session_id / Conversation-Id / Conversation_id headers
 //  3. X-Amp-Thread-Id header (Amp CLI thread ID)
 //  4. metadata.user_id (non-Claude Code format)
-//  5. conversation_id field in request body
-//  6. Stable hash from first few messages content (fallback)
+//  5. conversation_id or prompt_cache_key field in request body
+//  6. X-Client-Request-Id header (last resort)
+//  7. Stable hash from first few messages content (fallback)
 func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
 	primary, _ := extractSessionIDs(headers, payload, metadata)
 	return primary
@@ -883,43 +886,79 @@ func extractSessionIDCandidates(headers http.Header, payload []byte, metadata ma
 		}
 	}
 
-	// 2. X-Session-ID header
-	if headers != nil {
-		if sid := headers.Get("X-Session-ID"); sid != "" {
-			return "header:" + sid, nil
-		}
+	// 2. Explicit session-affinity headers
+	if primaryID, fallbackIDs := extractAffinityHeaderSessionIDs(headers); primaryID != "" {
+		return primaryID, fallbackIDs
 	}
 
 	// 3. X-Amp-Thread-Id header (Amp CLI thread ID)
 	if headers != nil {
 		if tid := headers.Get("X-Amp-Thread-Id"); tid != "" {
-			legacyPrimary, legacyFallback := extractBodySessionIDs(payload)
-			return "amp:" + tid, buildSessionIDFallbacks(legacyPrimary, legacyFallback)
+			legacyPrimary, legacyFallbacks := extractBodySessionIDs(payload)
+			return "amp:" + tid, buildSessionIDFallbacks(append([]string{legacyPrimary}, legacyFallbacks...)...)
 		}
 	}
 
-	primaryID, fallbackID := extractBodySessionIDs(payload)
-	return primaryID, buildSessionIDFallbacks(fallbackID)
+	primaryID, fallbackIDs := extractBodySessionIDs(payload)
+	if primaryID != "" {
+		return primaryID, fallbackIDs
+	}
+
+	// 6. X-Client-Request-Id header (last resort)
+	if headers != nil {
+		if sid := strings.TrimSpace(headers.Get("X-Client-Request-Id")); sid != "" {
+			return "header:" + sid, nil
+		}
+	}
+
+	return "", nil
 }
 
-func extractBodySessionIDs(payload []byte) (string, string) {
+func extractBodySessionIDs(payload []byte) (string, []string) {
 	if len(payload) == 0 {
-		return "", ""
+		return "", nil
 	}
 
 	// 4. metadata.user_id (non-Claude Code format)
 	userID := gjson.GetBytes(payload, "metadata.user_id").String()
 	if userID != "" {
-		return "user:" + userID, ""
+		return "user:" + userID, nil
 	}
 
-	// 5. conversation_id field
+	// 5. conversation_id or prompt_cache_key field
 	if convID := gjson.GetBytes(payload, "conversation_id").String(); convID != "" {
-		return "conv:" + convID, ""
+		return "conv:" + convID, buildSessionIDFallbacks("header:"+convID, "pck:"+convID)
+	}
+	if promptCacheKey := gjson.GetBytes(payload, "prompt_cache_key").String(); promptCacheKey != "" {
+		hashPrimary, hashFallback := extractMessageHashIDs(payload)
+		return "pck:" + promptCacheKey, buildSessionIDFallbacks("header:"+promptCacheKey, "conv:"+promptCacheKey, hashPrimary, hashFallback)
 	}
 
 	// 6. Hash-based fallback from message content
-	return extractMessageHashIDs(payload)
+	primaryID, fallbackID := extractMessageHashIDs(payload)
+	return primaryID, buildSessionIDFallbacks(fallbackID)
+}
+
+func extractAffinityHeaderSessionIDs(headers http.Header) (string, []string) {
+	if headers == nil {
+		return "", nil
+	}
+	if sid := headers.Get("X-Session-ID"); sid != "" {
+		return "header:" + sid, nil
+	}
+	if sid := headers.Get("Session-Id"); sid != "" {
+		return "header:" + sid, buildSessionIDFallbacks("pck:" + sid)
+	}
+	if sid := headers.Get("Session_id"); sid != "" {
+		return "header:" + sid, buildSessionIDFallbacks("pck:" + sid)
+	}
+	if sid := headers.Get("Conversation-Id"); sid != "" {
+		return "header:" + sid, buildSessionIDFallbacks("conv:"+sid, "pck:"+sid)
+	}
+	if sid := headers.Get("Conversation_id"); sid != "" {
+		return "header:" + sid, buildSessionIDFallbacks("conv:"+sid, "pck:"+sid)
+	}
+	return "", nil
 }
 
 func buildSessionIDFallbacks(ids ...string) []string {
