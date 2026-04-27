@@ -213,6 +213,19 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	return meta
 }
 
+// headersFromContext extracts the original HTTP request headers from the gin context
+// embedded in the provided context. This allows session affinity selectors to read
+// client headers like X-Amp-Thread-Id.
+func headersFromContext(ctx context.Context) http.Header {
+	if ctx == nil {
+		return nil
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		return ginCtx.Request.Header.Clone()
+	}
+	return nil
+}
+
 func pinnedAuthIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -500,6 +513,7 @@ func (h *BaseAPIHandler) executeNonStreamingWithAuthManager(
 	opts := coreexecutor.Options{
 		Stream:          false,
 		Alt:             alt,
+		Headers:         headersFromContext(ctx),
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
@@ -569,6 +583,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	opts := coreexecutor.Options{
 		Stream:          true,
 		Alt:             alt,
+		Headers:         headersFromContext(ctx),
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
