@@ -566,13 +566,7 @@ func TestManager_PickNext_StrictCodexWebsocketAffinity_AllCandidatesUnavailableU
 	if second != nil {
 		t.Fatalf("pickNext() after all candidates unavailable auth = %v, want nil", second)
 	}
-	var cooldownErr *modelCooldownError
-	if !errors.As(errPick, &cooldownErr) {
-		t.Fatalf("pickNext() error = %T %v, want *modelCooldownError", errPick, errPick)
-	}
-	if retryAfter := retryAfterFromError(errPick); retryAfter == nil || *retryAfter != 45*time.Minute {
-		t.Fatalf("retryAfterFromError() = %v, want %s", retryAfter, 45*time.Minute)
-	}
+	assertStrictBoundAuthCooldownError(t, errPick, 45*time.Minute)
 }
 
 func TestManager_PickNextMixed_StrictCodexWebsocketAffinity_BlocksMixedFailover(t *testing.T) {
@@ -757,13 +751,7 @@ func TestManager_PickNextMixed_StrictCodexWebsocketAffinity_AllCandidatesUnavail
 	if provider != "" {
 		t.Fatalf("pickNextMixed() after all candidates unavailable provider = %q, want empty", provider)
 	}
-	var cooldownErr *modelCooldownError
-	if !errors.As(errPick, &cooldownErr) {
-		t.Fatalf("pickNextMixed() error = %T %v, want *modelCooldownError", errPick, errPick)
-	}
-	if retryAfter := retryAfterFromError(errPick); retryAfter == nil || *retryAfter != 45*time.Minute {
-		t.Fatalf("retryAfterFromError() = %v, want %s", retryAfter, 45*time.Minute)
-	}
+	assertStrictBoundAuthCooldownError(t, errPick, 45*time.Minute)
 }
 
 func TestManager_PickNext_StrictCodexWebsocketAffinity_TriedBoundAuthStillUsesBoundCooldown(t *testing.T) {
