@@ -332,19 +332,19 @@ func ginContextFrom(ctx context.Context) *gin.Context {
 	return ginCtx
 }
 
-const creditsUsedKey = "__antigravity_credits_used__"
+const antigravityCreditsUsedMarker = "antigravityCreditsUsed"
 
 // MarkCreditsUsed flags the request as having used AI credits for billing.
 func MarkCreditsUsed(ctx context.Context) {
 	if ginCtx := ginContextFrom(ctx); ginCtx != nil {
-		ginCtx.Set(creditsUsedKey, true)
+		ginCtx.Set(antigravityCreditsUsedMarker, true)
 	}
 }
 
 // CreditsUsed returns true if the request used AI credits.
 func CreditsUsed(ctx context.Context) bool {
 	if ginCtx := ginContextFrom(ctx); ginCtx != nil {
-		if val, exists := ginCtx.Get(creditsUsedKey); exists {
+		if val, exists := ginCtx.Get(antigravityCreditsUsedMarker); exists {
 			if b, ok := val.(bool); ok {
 				return b
 			}
