@@ -369,6 +369,46 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_OpenAICompat_SkipsDisabledProvider(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:     "EnabledProvider",
+					BaseURL:  "https://enabled.api.com",
+					Disabled: false,
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "enabled-key"},
+					},
+				},
+				{
+					Name:     "DisabledProvider",
+					BaseURL:  "https://disabled.api.com",
+					Disabled: true,
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "disabled-key-1"},
+						{APIKey: "disabled-key-2"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth from enabled provider, got %d", len(auths))
+	}
+	if auths[0].Label != "EnabledProvider" {
+		t.Fatalf("auth label = %q, want %q", auths[0].Label, "EnabledProvider")
+	}
+}
+
 func TestConfigSynthesizer_VertexCompat(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{

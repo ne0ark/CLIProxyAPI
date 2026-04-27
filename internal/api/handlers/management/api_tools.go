@@ -623,6 +623,9 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 		if auth == nil {
 			continue
 		}
+		if auth.Disabled || auth.Status == coreauth.StatusDisabled {
+			continue
+		}
 		auth.EnsureIndex()
 		if auth.Index == authIndex {
 			return auth
@@ -766,6 +769,9 @@ func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, 
 
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
+		if compat.Disabled {
+			continue
+		}
 		for _, candidate := range candidates {
 			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
 				for j := range compat.APIKeyEntries {

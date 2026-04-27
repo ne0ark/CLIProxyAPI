@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -61,5 +62,42 @@ func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T
 	}
 	if !seenGlobalExcluded {
 		t.Fatal("expected global excluded model to be present when attribute override is set")
+	}
+}
+
+func TestRegisterModelsForAuth_SkipsDisabledOpenAICompatProvider(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:     "compat-disabled",
+					Disabled: true,
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "upstream-model", Alias: "alias-model"},
+					},
+				},
+			},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "auth-openai-compat-disabled",
+		Provider: "compat-disabled",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"compat_name":  "compat-disabled",
+			"provider_key": "compat-disabled",
+		},
+	}
+
+	modelRegistry := GlobalModelRegistry()
+	modelRegistry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(auth)
+
+	if models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID); len(models) != 0 {
+		t.Fatalf("expected disabled provider to register no models, got %d", len(models))
 	}
 }

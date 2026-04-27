@@ -79,6 +79,34 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 	}
 }
 
+func TestBuildAPIKeyClientsCounts_SkipsDisabledOpenAICompat(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{
+				Name:     "enabled",
+				Disabled: false,
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+					{APIKey: "o1"},
+					{APIKey: "o2"},
+				},
+			},
+			{
+				Name:     "disabled",
+				Disabled: true,
+				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+					{APIKey: "o3"},
+					{APIKey: "o4"},
+				},
+			},
+		},
+	}
+
+	_, _, _, _, compat := BuildAPIKeyClients(cfg)
+	if compat != 2 {
+		t.Fatalf("compat count = %d, want 2", compat)
+	}
+}
+
 func TestNormalizeAuthStripsTemporalFields(t *testing.T) {
 	now := time.Now()
 	auth := &coreauth.Auth{
