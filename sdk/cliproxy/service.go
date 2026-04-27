@@ -84,6 +84,9 @@ type Service struct {
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
 
+	// manageCoreSelector reports whether the service owns selector rebuilds from config.
+	manageCoreSelector bool
+
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
 
@@ -108,6 +111,50 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
 	)
+}
+
+func (s *Service) applySelectorConfigChange(previousCfg, newCfg *config.Config) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+
+	previousStrategy := "round-robin"
+	previousSessionAffinity := false
+	previousSessionAffinityTTL := ""
+	previousCodexWebsocketStrictAffinity := false
+	if previousCfg != nil {
+		previousStrategy = normalizeSelectorStrategy(previousCfg.Routing.Strategy)
+		previousSessionAffinity = sessionAffinityEnabled(previousCfg)
+		previousSessionAffinityTTL = previousCfg.Routing.SessionAffinityTTL
+		previousCodexWebsocketStrictAffinity = previousCfg.Routing.CodexWebsocketStrictAffinity
+	}
+
+	nextStrategy := "round-robin"
+	nextSessionAffinity := false
+	nextSessionAffinityTTL := ""
+	nextCodexWebsocketStrictAffinity := false
+	if newCfg != nil {
+		nextStrategy = normalizeSelectorStrategy(newCfg.Routing.Strategy)
+		nextSessionAffinity = sessionAffinityEnabled(newCfg)
+		nextSessionAffinityTTL = newCfg.Routing.SessionAffinityTTL
+		nextCodexWebsocketStrictAffinity = newCfg.Routing.CodexWebsocketStrictAffinity
+	}
+
+	selectorChanged := previousStrategy != nextStrategy ||
+		previousSessionAffinity != nextSessionAffinity ||
+		previousSessionAffinityTTL != nextSessionAffinityTTL ||
+		previousCodexWebsocketStrictAffinity != nextCodexWebsocketStrictAffinity
+	if !selectorChanged {
+		return
+	}
+
+	if !s.manageCoreSelector {
+		log.Warn("cliproxy: ignoring selector-related config reload because WithCoreAuthManager supplied the runtime selector")
+		return
+	}
+
+	selector := buildManagedCoreSelector(newCfg)
+	s.coreManager.SetSelector(selector)
 }
 
 func (s *Service) ensureAuthUpdateQueue(ctx context.Context) {
@@ -602,15 +649,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	var watcherWrapper *WatcherWrapper
 	reloadCallback := func(newCfg *config.Config) {
-		previousStrategy := ""
-		var previousSessionAffinity bool
-		var previousSessionAffinityTTL string
+		var previousCfg *config.Config
 		s.cfgMu.RLock()
-		if s.cfg != nil {
-			previousStrategy = strings.ToLower(strings.TrimSpace(s.cfg.Routing.Strategy))
-			previousSessionAffinity = s.cfg.Routing.ClaudeCodeSessionAffinity || s.cfg.Routing.SessionAffinity
-			previousSessionAffinityTTL = s.cfg.Routing.SessionAffinityTTL
-		}
+		previousCfg = s.cfg
 		s.cfgMu.RUnlock()
 
 		if newCfg == nil {
@@ -622,49 +663,7 @@ func (s *Service) Run(ctx context.Context) error {
 			return
 		}
 
-		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
-		normalizeStrategy := func(strategy string) string {
-			switch strategy {
-			case "fill-first", "fillfirst", "ff":
-				return "fill-first"
-			default:
-				return "round-robin"
-			}
-		}
-		previousStrategy = normalizeStrategy(previousStrategy)
-		nextStrategy = normalizeStrategy(nextStrategy)
-
-		nextSessionAffinity := newCfg.Routing.ClaudeCodeSessionAffinity || newCfg.Routing.SessionAffinity
-		nextSessionAffinityTTL := newCfg.Routing.SessionAffinityTTL
-
-		selectorChanged := previousStrategy != nextStrategy ||
-			previousSessionAffinity != nextSessionAffinity ||
-			previousSessionAffinityTTL != nextSessionAffinityTTL
-
-		if s.coreManager != nil && selectorChanged {
-			var selector coreauth.Selector
-			switch nextStrategy {
-			case "fill-first":
-				selector = &coreauth.FillFirstSelector{}
-			default:
-				selector = &coreauth.RoundRobinSelector{}
-			}
-
-			if nextSessionAffinity {
-				ttl := time.Hour
-				if ttlStr := strings.TrimSpace(nextSessionAffinityTTL); ttlStr != "" {
-					if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
-						ttl = parsed
-					}
-				}
-				selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-					Fallback: selector,
-					TTL:      ttl,
-				})
-			}
-
-			s.coreManager.SetSelector(selector)
-		}
+		s.applySelectorConfigChange(previousCfg, newCfg)
 
 		s.applyRetryConfig(newCfg)
 		s.applyPprofConfig(newCfg)

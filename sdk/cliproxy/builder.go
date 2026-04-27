@@ -14,6 +14,7 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // Builder constructs a Service instance with customizable providers.
@@ -49,6 +50,70 @@ type Builder struct {
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
+}
+
+func normalizeSelectorStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "fill-first", "fillfirst", "ff":
+		return "fill-first"
+	default:
+		return "round-robin"
+	}
+}
+
+func sessionAffinityEnabled(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg.Routing.ClaudeCodeSessionAffinity || cfg.Routing.SessionAffinity
+}
+
+func buildManagedCoreSelector(cfg *config.Config) coreauth.Selector {
+	strategy := "round-robin"
+	sessionAffinity := false
+	sessionAffinityTTL := time.Hour
+	codexWebsocketStrictAffinity := false
+	if cfg != nil {
+		strategy = normalizeSelectorStrategy(cfg.Routing.Strategy)
+		sessionAffinity = sessionAffinityEnabled(cfg)
+		codexWebsocketStrictAffinity = cfg.Routing.CodexWebsocketStrictAffinity
+		if ttlStr := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttlStr != "" {
+			if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
+				sessionAffinityTTL = parsed
+			}
+		}
+	}
+	if codexWebsocketStrictAffinity && !sessionAffinity {
+		log.Warn("routing.codex-websocket-strict-affinity requires routing.session-affinity (or legacy routing.claude-code-session-affinity); strict Codex websocket bindings will remain inactive until session affinity is enabled")
+	}
+
+	var selector coreauth.Selector
+	switch strategy {
+	case "fill-first":
+		selector = &coreauth.FillFirstSelector{}
+	default:
+		selector = &coreauth.RoundRobinSelector{}
+	}
+
+	if sessionAffinity {
+		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
+			Fallback:                     selector,
+			TTL:                          sessionAffinityTTL,
+			CodexWebsocketStrictAffinity: codexWebsocketStrictAffinity,
+		})
+	}
+	return selector
+}
+
+func warnIgnoredSelectorConfigWithCustomCoreManager(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if normalizeSelectorStrategy(cfg.Routing.Strategy) != "round-robin" ||
+		sessionAffinityEnabled(cfg) ||
+		cfg.Routing.CodexWebsocketStrictAffinity {
+		log.Warn("cliproxy: WithCoreAuthManager overrides config-managed selector routing; routing.strategy, routing.session-affinity, and routing.codex-websocket-strict-affinity must be configured on the injected core manager")
+	}
 }
 
 // Hooks allows callers to plug into service lifecycle stages.
@@ -202,42 +267,16 @@ func (b *Builder) Build() (*Service, error) {
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	coreManager := b.coreManager
+	manageCoreSelector := coreManager == nil
 	if coreManager == nil {
 		tokenStore := sdkAuth.GetTokenStore()
 		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && b.cfg != nil {
 			dirSetter.SetBaseDir(b.cfg.AuthDir)
 		}
-
-		strategy := ""
-		sessionAffinity := false
-		sessionAffinityTTL := time.Hour
-		if b.cfg != nil {
-			strategy = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Strategy))
-			// Support both legacy ClaudeCodeSessionAffinity and new universal SessionAffinity
-			sessionAffinity = b.cfg.Routing.ClaudeCodeSessionAffinity || b.cfg.Routing.SessionAffinity
-			if ttlStr := strings.TrimSpace(b.cfg.Routing.SessionAffinityTTL); ttlStr != "" {
-				if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
-					sessionAffinityTTL = parsed
-				}
-			}
-		}
-		var selector coreauth.Selector
-		switch strategy {
-		case "fill-first", "fillfirst", "ff":
-			selector = &coreauth.FillFirstSelector{}
-		default:
-			selector = &coreauth.RoundRobinSelector{}
-		}
-
-		// Wrap with session affinity if enabled (failover is always on)
-		if sessionAffinity {
-			selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-				Fallback: selector,
-				TTL:      sessionAffinityTTL,
-			})
-		}
-
+		selector := buildManagedCoreSelector(b.cfg)
 		coreManager = coreauth.NewManager(tokenStore, selector, nil)
+	} else {
+		warnIgnoredSelectorConfigWithCustomCoreManager(b.cfg)
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
@@ -245,16 +284,17 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 
 	service := &Service{
-		cfg:            b.cfg,
-		configPath:     b.configPath,
-		tokenProvider:  tokenProvider,
-		apiKeyProvider: apiKeyProvider,
-		watcherFactory: watcherFactory,
-		hooks:          b.hooks,
-		authManager:    authManager,
-		accessManager:  accessManager,
-		coreManager:    coreManager,
-		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
+		cfg:                b.cfg,
+		configPath:         b.configPath,
+		tokenProvider:      tokenProvider,
+		apiKeyProvider:     apiKeyProvider,
+		watcherFactory:     watcherFactory,
+		hooks:              b.hooks,
+		authManager:        authManager,
+		accessManager:      accessManager,
+		coreManager:        coreManager,
+		manageCoreSelector: manageCoreSelector,
+		serverOptions:      append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	coreManager.SetHook(serviceAuthHook{service: service, next: coreManager.Hook()})
 	return service, nil

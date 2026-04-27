@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -243,6 +244,19 @@ func isBuiltInSelector(selector Selector) bool {
 	}
 }
 
+func sameSelectorInstance(a, b Selector) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
+	if reflect.TypeOf(a).Comparable() {
+		return a == b
+	}
+	return false
+}
+
 func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
 	if m == nil || m.scheduler == nil {
 		return
@@ -372,12 +386,24 @@ func (m *Manager) SetSelector(selector Selector) {
 	if selector == nil {
 		selector = &RoundRobinSelector{}
 	}
+	var previous Selector
 	m.mu.Lock()
+	previous = m.selector
+	if previousSessionAffinity, ok := previous.(*SessionAffinitySelector); ok {
+		if nextSessionAffinity, ok := selector.(*SessionAffinitySelector); ok {
+			nextSessionAffinity.cache.CopyFrom(previousSessionAffinity.cache)
+		}
+	}
 	m.selector = selector
 	m.mu.Unlock()
 	if m.scheduler != nil {
 		m.scheduler.setSelector(selector)
 		m.syncScheduler()
+	}
+	if previous != nil && !sameSelectorInstance(previous, selector) {
+		if stoppable, ok := previous.(StoppableSelector); ok {
+			stoppable.Stop()
+		}
 	}
 }
 
@@ -689,6 +715,77 @@ func selectionArgForSelector(selector Selector, routeModel string) string {
 		return ""
 	}
 	return routeModel
+}
+
+func selectorInputAuths(selector Selector, available, candidates []*Auth) []*Auth {
+	_ = selector
+	_ = candidates
+	return available
+}
+
+func preferStrictBoundAuthError(lastErr, nextErr error) error {
+	if nextErr == nil {
+		return lastErr
+	}
+	type strictBoundAuthFailure interface {
+		BoundAuthStrictFailure() bool
+	}
+	var strictFailure strictBoundAuthFailure
+	if errors.As(nextErr, &strictFailure) && strictFailure != nil && strictFailure.BoundAuthStrictFailure() {
+		return nextErr
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return nextErr
+}
+
+func (m *Manager) sessionAffinitySelectorCandidates(candidates []*Auth, routeModel string) []*Auth {
+	if m == nil || len(candidates) == 0 {
+		return candidates
+	}
+	if _, ok := m.selector.(*SessionAffinitySelector); !ok {
+		return candidates
+	}
+	routeModel = strings.TrimSpace(routeModel)
+	if routeModel == "" {
+		return candidates
+	}
+
+	mapped := make([]*Auth, 0, len(candidates))
+	changed := false
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		selectionModel := strings.TrimSpace(m.selectionModelForAuth(candidate, routeModel))
+		if selectionModel == "" || selectionModel == routeModel {
+			mapped = append(mapped, candidate)
+			continue
+		}
+		state := candidate.ModelStates[selectionModel]
+		if state == nil {
+			baseSelectionModel := canonicalModelKey(selectionModel)
+			if baseSelectionModel != "" && baseSelectionModel != selectionModel {
+				state = candidate.ModelStates[baseSelectionModel]
+			}
+		}
+		if state == nil {
+			mapped = append(mapped, candidate)
+			continue
+		}
+		clone := candidate.Clone()
+		if clone.ModelStates == nil {
+			clone.ModelStates = make(map[string]*ModelState)
+		}
+		clone.ModelStates[routeModel] = state.Clone()
+		mapped = append(mapped, clone)
+		changed = true
+	}
+	if !changed {
+		return candidates
+	}
+	return mapped
 }
 
 func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, auth *Auth, routeModel string) bool {
@@ -1326,10 +1423,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
 		if errPick != nil {
-			if lastErr != nil {
-				return cliproxyexecutor.Response{}, lastErr
-			}
-			return cliproxyexecutor.Response{}, errPick
+			return cliproxyexecutor.Response{}, preferStrictBoundAuthError(lastErr, errPick)
 		}
 
 		entry := logEntryWithRequestID(ctx)
@@ -1404,10 +1498,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
 		if errPick != nil {
-			if lastErr != nil {
-				return cliproxyexecutor.Response{}, lastErr
-			}
-			return cliproxyexecutor.Response{}, errPick
+			return cliproxyexecutor.Response{}, preferStrictBoundAuthError(lastErr, errPick)
 		}
 
 		entry := logEntryWithRequestID(ctx)
@@ -1497,14 +1588,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
 		if errPick != nil {
-			if lastErr != nil {
-				var bootstrapErr *streamBootstrapError
-				if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
-					return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
-				}
-				return nil, lastErr
+			finalErr := preferStrictBoundAuthError(lastErr, errPick)
+			var bootstrapErr *streamBootstrapError
+			if errors.As(finalErr, &bootstrapErr) && bootstrapErr != nil {
+				return streamErrorResult(bootstrapErr.Headers(), bootstrapErr.cause), nil
 			}
-			return nil, errPick
+			return nil, finalErr
 		}
 
 		entry := logEntryWithRequestID(ctx)
@@ -1993,6 +2082,32 @@ func (m *Manager) retryAllowed(attempt int, providers []string) bool {
 	return false
 }
 
+func (m *Manager) retryAllowedForAuthID(authID string, attempt int) bool {
+	if m == nil || attempt < 0 {
+		return false
+	}
+	defaultRetry := int(m.requestRetry.Load())
+	if defaultRetry < 0 {
+		defaultRetry = 0
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	auth := m.auths[authID]
+	if auth == nil {
+		return false
+	}
+
+	effectiveRetry := defaultRetry
+	if override, ok := auth.RequestRetryOverride(); ok {
+		effectiveRetry = override
+	}
+	if effectiveRetry < 0 {
+		effectiveRetry = 0
+	}
+	return attempt < effectiveRetry
+}
+
 func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
@@ -2006,6 +2121,32 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 	}
 	if isRequestInvalidError(err) {
 		return 0, false
+	}
+	type strictBoundAuthFailure interface {
+		BoundAuthStrictFailure() bool
+	}
+	type strictBoundAuthIDProvider interface {
+		BoundAuthID() string
+	}
+	var strictFailure strictBoundAuthFailure
+	if errors.As(err, &strictFailure) && strictFailure != nil && strictFailure.BoundAuthStrictFailure() {
+		retryAfter := retryAfterFromError(err)
+		if retryAfter == nil || *retryAfter <= 0 || *retryAfter > maxWait {
+			return 0, false
+		}
+		boundAuthID := ""
+		var boundAuth strictBoundAuthIDProvider
+		if errors.As(err, &boundAuth) && boundAuth != nil {
+			boundAuthID = boundAuth.BoundAuthID()
+		}
+		if boundAuthID != "" {
+			if !m.retryAllowedForAuthID(boundAuthID, attempt) {
+				return 0, false
+			}
+		} else if !m.retryAllowed(attempt, providers) {
+			return 0, false
+		}
+		return *retryAfter, true
 	}
 	wait, found := m.closestCooldownWait(providers, model, attempt)
 	if found {
@@ -2696,6 +2837,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
+	inspectionCandidates := make([]*Auth, 0, len(m.auths))
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
@@ -2713,24 +2855,43 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
-		if _, used := tried[candidate.ID]; used {
+		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
+		inspectionCandidates = append(inspectionCandidates, candidate)
+		if _, used := tried[candidate.ID]; used {
 			continue
 		}
 		candidates = append(candidates, candidate)
 	}
-	if len(candidates) == 0 {
+	if len(inspectionCandidates) == 0 {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
 	if errAvailable != nil {
+		if selector, ok := m.selector.(*SessionAffinitySelector); ok {
+			selectableSelectorCandidates := m.sessionAffinitySelectorCandidates(candidates, model)
+			inspectionSelectorCandidates := m.sessionAffinitySelectorCandidates(inspectionCandidates, model)
+			selectorCtx := ctx
+			if len(selectableSelectorCandidates) > 0 || len(inspectionSelectorCandidates) > 0 {
+				selectorCtx = withSessionAffinityCandidates(selectorCtx, selectableSelectorCandidates, inspectionSelectorCandidates)
+			}
+			if errStrict := selector.strictBoundAuthFailure(selectorCtx, provider, selectionArgForSelector(m.selector, model), opts, inspectionCandidates); errStrict != nil {
+				m.mu.RUnlock()
+				return nil, nil, errStrict
+			}
+		}
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
 	}
-	selected, errPick := m.selector.Pick(ctx, provider, selectionArgForSelector(m.selector, model), opts, available)
+	selectableSelectorCandidates := m.sessionAffinitySelectorCandidates(candidates, model)
+	inspectionSelectorCandidates := m.sessionAffinitySelectorCandidates(inspectionCandidates, model)
+	selectorCtx := ctx
+	if _, ok := m.selector.(*SessionAffinitySelector); ok && (len(selectableSelectorCandidates) > 0 || len(inspectionSelectorCandidates) > 0) {
+		selectorCtx = withSessionAffinityCandidates(selectorCtx, selectableSelectorCandidates, inspectionSelectorCandidates)
+	}
+	selected, errPick := m.selector.Pick(selectorCtx, provider, selectionArgForSelector(m.selector, model), opts, selectorInputAuths(m.selector, available, inspectionSelectorCandidates))
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, errPick
@@ -2815,6 +2976,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 
 	m.mu.RLock()
+	inspectionCandidates := make([]*Auth, 0, len(m.auths))
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	// Always use base model name (without thinking suffix) for auth matching.
@@ -2839,27 +3001,46 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
-		if _, used := tried[candidate.ID]; used {
-			continue
-		}
 		if _, ok := m.executors[providerKey]; !ok {
 			continue
 		}
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
+		inspectionCandidates = append(inspectionCandidates, candidate)
+		if _, used := tried[candidate.ID]; used {
+			continue
+		}
 		candidates = append(candidates, candidate)
 	}
-	if len(candidates) == 0 {
+	if len(inspectionCandidates) == 0 {
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
 	if errAvailable != nil {
+		if selector, ok := m.selector.(*SessionAffinitySelector); ok {
+			selectableSelectorCandidates := m.sessionAffinitySelectorCandidates(candidates, model)
+			inspectionSelectorCandidates := m.sessionAffinitySelectorCandidates(inspectionCandidates, model)
+			selectorCtx := ctx
+			if len(selectableSelectorCandidates) > 0 || len(inspectionSelectorCandidates) > 0 {
+				selectorCtx = withSessionAffinityCandidates(selectorCtx, selectableSelectorCandidates, inspectionSelectorCandidates)
+			}
+			if errStrict := selector.strictBoundAuthFailure(selectorCtx, "mixed", selectionArgForSelector(m.selector, model), opts, inspectionCandidates); errStrict != nil {
+				m.mu.RUnlock()
+				return nil, nil, "", errStrict
+			}
+		}
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
 	}
-	selected, errPick := m.selector.Pick(ctx, "mixed", selectionArgForSelector(m.selector, model), opts, available)
+	selectableSelectorCandidates := m.sessionAffinitySelectorCandidates(candidates, model)
+	inspectionSelectorCandidates := m.sessionAffinitySelectorCandidates(inspectionCandidates, model)
+	selectorCtx := ctx
+	if _, ok := m.selector.(*SessionAffinitySelector); ok && (len(selectableSelectorCandidates) > 0 || len(inspectionSelectorCandidates) > 0) {
+		selectorCtx = withSessionAffinityCandidates(selectorCtx, selectableSelectorCandidates, inspectionSelectorCandidates)
+	}
+	selected, errPick := m.selector.Pick(selectorCtx, "mixed", selectionArgForSelector(m.selector, model), opts, selectorInputAuths(m.selector, available, inspectionSelectorCandidates))
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errPick
