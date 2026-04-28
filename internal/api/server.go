@@ -7,8 +7,10 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +31,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/featureflags"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -39,6 +42,7 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -130,6 +134,19 @@ type Server struct {
 
 	// server is the underlying HTTP server.
 	server *http.Server
+
+	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
+	muxBaseListener net.Listener
+
+	// muxHTTPListener receives HTTP connections selected by the multiplexer.
+	muxHTTPListener *muxListener
+
+	// usageQueue stores usage payloads for Redis queue consumers attached to this server instance.
+	usageQueue *redisqueue.Queue
+
+	// redisConnections tracks active RESP sessions so shutdown and management
+	// disable events can close them immediately.
+	redisConnections sync.Map
 
 	// handlers contains the API handlers for processing requests.
 	handlers *handlers.BaseAPIHandler
@@ -257,6 +274,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		metrics:             metrics,
 		handlers:            handlers.NewBaseAPIHandlers(&cfg.SDKConfig, authManager),
 		cfg:                 cfg,
+		usageQueue:          redisqueue.NewQueue(),
 		accessManager:       accessManager,
 		requestLogger:       requestLogger,
 		loggerToggle:        toggle,
@@ -287,6 +305,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
 	}
 	s.localPassword = optionState.localPassword
+	s.engine.Use(s.redisQueueContextMiddleware())
 
 	// Setup routes
 	s.setupRoutes()
@@ -313,6 +332,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// or when a local management password is provided (e.g. TUI mode).
 	hasManagementSecret := cfg.RemoteManagement.SecretKey != "" || envManagementSecret || s.localPassword != ""
 	s.managementRoutesEnabled.Store(hasManagementSecret)
+	if s.usageQueue != nil {
+		s.usageQueue.SetRecordingEnabled(cfg.UsageStatisticsEnabled)
+		s.usageQueue.SetEnabled(hasManagementSecret)
+	}
 	if hasManagementSecret {
 		s.registerManagementRoutes()
 	}
@@ -820,26 +843,98 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
 
+	addr := s.server.Addr
+	listener, errListen := net.Listen("tcp", addr)
+	if errListen != nil {
+		return fmt.Errorf("failed to start HTTP server: %v", errListen)
+	}
+
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
-		cert := strings.TrimSpace(s.cfg.TLS.Cert)
-		key := strings.TrimSpace(s.cfg.TLS.Key)
-		if cert == "" || key == "" {
+		certPath := strings.TrimSpace(s.cfg.TLS.Cert)
+		keyPath := strings.TrimSpace(s.cfg.TLS.Key)
+		if certPath == "" || keyPath == "" {
+			if errClose := listener.Close(); errClose != nil {
+				log.Errorf("failed to close listener after TLS validation failure: %v", errClose)
+			}
 			return fmt.Errorf("failed to start HTTPS server: tls.cert or tls.key is empty")
 		}
-		log.Debugf("Starting API server on %s with TLS", s.server.Addr)
-		if errServeTLS := s.server.ListenAndServeTLS(cert, key); errServeTLS != nil && !errors.Is(errServeTLS, http.ErrServerClosed) {
-			return fmt.Errorf("failed to start HTTPS server: %v", errServeTLS)
+		certPair, errLoad := tls.LoadX509KeyPair(certPath, keyPath)
+		if errLoad != nil {
+			if errClose := listener.Close(); errClose != nil {
+				log.Errorf("failed to close listener after TLS key pair load failure: %v", errClose)
+			}
+			return fmt.Errorf("failed to start HTTPS server: %v", errLoad)
+		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{certPair},
+			NextProtos:   []string{"h2", "http/1.1"},
+		}
+		s.server.TLSConfig = tlsConfig
+		if errHTTP2 := http2.ConfigureServer(s.server, &http2.Server{}); errHTTP2 != nil {
+			log.Warnf("failed to configure HTTP/2: %v", errHTTP2)
+		}
+		listener = tls.NewListener(listener, tlsConfig)
+		log.Debugf("Starting API server on %s with TLS", addr)
+	} else {
+		log.Debugf("Starting API server on %s", addr)
+	}
+
+	httpListener := newMuxListener(listener.Addr(), 1024)
+	s.muxBaseListener = listener
+	s.muxHTTPListener = httpListener
+
+	httpErrCh := make(chan error, 1)
+	acceptErrCh := make(chan error, 1)
+
+	go func() {
+		httpErrCh <- s.server.Serve(httpListener)
+	}()
+	go func() {
+		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
+	}()
+
+	select {
+	case errServe := <-httpErrCh:
+		if s.muxBaseListener != nil {
+			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+				log.Debugf("failed to close shared listener after HTTP serve exit: %v", errClose)
+			}
+		}
+		if s.muxHTTPListener != nil {
+			_ = s.muxHTTPListener.Close()
+		}
+		errAccept := <-acceptErrCh
+		errServe = normalizeHTTPServeError(errServe)
+		errAccept = normalizeListenerError(errAccept)
+		if errServe != nil {
+			return fmt.Errorf("failed to start HTTP server: %v", errServe)
+		}
+		if errAccept != nil {
+			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
+		}
+		return nil
+	case errAccept := <-acceptErrCh:
+		if s.muxHTTPListener != nil {
+			_ = s.muxHTTPListener.Close()
+		}
+		if s.muxBaseListener != nil {
+			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+				log.Debugf("failed to close shared listener after accept loop exit: %v", errClose)
+			}
+		}
+		errServe := <-httpErrCh
+		errServe = normalizeHTTPServeError(errServe)
+		errAccept = normalizeListenerError(errAccept)
+		if errAccept != nil {
+			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
+		}
+		if errServe != nil {
+			return fmt.Errorf("failed to start HTTP server: %v", errServe)
 		}
 		return nil
 	}
-
-	log.Debugf("Starting API server on %s", s.server.Addr)
-	if errServe := s.server.ListenAndServe(); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
-		return fmt.Errorf("failed to start HTTP server: %v", errServe)
-	}
-
-	return nil
 }
 
 // Stop gracefully shuts down the API server without interrupting any
@@ -860,14 +955,78 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	if s.muxHTTPListener != nil {
+		_ = s.muxHTTPListener.Close()
+	}
+	if s.muxBaseListener != nil {
+		if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			log.Debugf("failed to close shared listener: %v", errClose)
+		}
+	}
+
+	s.managementRoutesEnabled.Store(false)
+	s.closeRedisConnections()
+
 	// Shutdown the HTTP server.
-	if err := s.server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
+	shutdownErr := s.server.Shutdown(ctx)
+	if s.usageQueue != nil {
+		s.usageQueue.SetEnabled(false)
+	}
+	if shutdownErr != nil {
+		return fmt.Errorf("failed to shutdown HTTP server: %v", shutdownErr)
 	}
 	logging.FlushErrorTracking(2 * time.Second)
 
 	log.Debug("API server stopped")
 	return nil
+}
+
+func (s *Server) trackRedisConnection(conn net.Conn, localClient bool) func() {
+	if s == nil || conn == nil {
+		return func() {}
+	}
+	s.redisConnections.Store(conn, localClient)
+	return func() {
+		s.redisConnections.Delete(conn)
+	}
+}
+
+func (s *Server) closeRedisConnections() {
+	if s == nil {
+		return
+	}
+	s.redisConnections.Range(func(key, _ any) bool {
+		conn, ok := key.(net.Conn)
+		if !ok || conn == nil {
+			return true
+		}
+		s.redisConnections.Delete(conn)
+		if errClose := conn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			log.Debugf("failed to close redis connection: %v", errClose)
+		}
+		return true
+	})
+}
+
+func (s *Server) closeRemoteRedisConnections() {
+	if s == nil {
+		return
+	}
+	s.redisConnections.Range(func(key, value any) bool {
+		localClient, _ := value.(bool)
+		if localClient {
+			return true
+		}
+		conn, ok := key.(net.Conn)
+		if !ok || conn == nil {
+			return true
+		}
+		s.redisConnections.Delete(conn)
+		if errClose := conn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			log.Debugf("failed to close remote redis connection: %v", errClose)
+		}
+		return true
+	})
 }
 
 // corsMiddleware returns a Gin middleware handler that adds CORS headers
@@ -963,8 +1122,10 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 
 	prevSecretEmpty := true
+	managementSecretChanged := false
 	if oldCfg != nil {
 		prevSecretEmpty = oldCfg.RemoteManagement.SecretKey == ""
+		managementSecretChanged = oldCfg.RemoteManagement.SecretKey != cfg.RemoteManagement.SecretKey
 	}
 	newSecretEmpty := cfg.RemoteManagement.SecretKey == ""
 	if s.envManagementSecret {
@@ -974,6 +1135,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		} else {
 			s.managementRoutesEnabled.Store(true)
 		}
+	} else if s.localPassword != "" {
+		s.registerManagementRoutes()
+		s.managementRoutesEnabled.Store(true)
 	} else {
 		switch {
 		case prevSecretEmpty && !newSecretEmpty:
@@ -993,9 +1157,22 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 			s.managementRoutesEnabled.Store(!newSecretEmpty)
 		}
 	}
+	s.cfg = cfg
+	if s.mgmt != nil {
+		s.mgmt.SetConfig(cfg)
+	}
+	managementEnabled := s.managementRoutesEnabled.Load()
+	if s.usageQueue != nil {
+		s.usageQueue.SetRecordingEnabled(cfg.UsageStatisticsEnabled)
+		s.usageQueue.SetEnabled(managementEnabled)
+	}
+	if !managementEnabled || managementSecretChanged {
+		s.closeRedisConnections()
+	} else if oldCfg != nil && oldCfg.RemoteManagement.AllowRemote && !cfg.RemoteManagement.AllowRemote && !s.envManagementSecret {
+		s.closeRemoteRedisConnections()
+	}
 
 	s.applyAccessConfig(oldCfg, cfg)
-	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
@@ -1060,6 +1237,15 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 		return
 	}
 	s.wsAuthChanged = fn
+}
+
+func (s *Server) redisQueueContextMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s != nil && s.usageQueue != nil && c != nil && c.Request != nil {
+			c.Request = c.Request.WithContext(redisqueue.WithQueue(c.Request.Context(), s.usageQueue))
+		}
+		c.Next()
+	}
 }
 
 // (management handlers moved to internal/api/handlers/management)

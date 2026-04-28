@@ -15,7 +15,10 @@ type Record struct {
 	APIKey      string
 	AuthID      string
 	AuthIndex   string
+	AuthType    string
 	Source      string
+	Endpoint    string
+	RequestID   string
 	RequestedAt time.Time
 	Latency     time.Duration
 	Failed      bool

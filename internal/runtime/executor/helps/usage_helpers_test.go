@@ -1,9 +1,15 @@
 package helps
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
@@ -239,6 +245,52 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
 		t.Fatalf("expected non-zero cached token usage to be recorded")
+	}
+}
+
+func TestResolveUsageAuthTypePrefersAuthKindAttribute(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{"auth_kind": "oauth"},
+	}
+	if got := resolveUsageAuthType(auth); got != "oauth" {
+		t.Fatalf("resolveUsageAuthType() = %q, want %q", got, "oauth")
+	}
+
+	auth.Attributes["auth_kind"] = "api_key"
+	if got := resolveUsageAuthType(auth); got != "apikey" {
+		t.Fatalf("resolveUsageAuthType() = %q, want %q", got, "apikey")
+	}
+}
+
+func TestResolveUsageAuthTypeFallsBackToAccountInfo(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{"api_key": "test-key"},
+	}
+	if got := resolveUsageAuthType(auth); got != "apikey" {
+		t.Fatalf("resolveUsageAuthType() = %q, want %q", got, "apikey")
+	}
+}
+
+func TestUsageReporterBuildRecordIncludesRequestMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "http://example.com/v1/chat/completions", nil)
+	ginCtx.Status(http.StatusInternalServerError)
+	internallogging.SetGinRequestID(ginCtx, "gin-request-id")
+
+	ctx := context.WithValue(internallogging.WithRequestID(context.Background(), "ctx-request-id"), "gin", ginCtx)
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, resolveUsageFailure(ctx, false))
+
+	if record.RequestID != "ctx-request-id" {
+		t.Fatalf("record.RequestID = %q, want %q", record.RequestID, "ctx-request-id")
+	}
+	if record.Endpoint != "POST /v1/chat/completions" {
+		t.Fatalf("record.Endpoint = %q, want %q", record.Endpoint, "POST /v1/chat/completions")
+	}
+	if !record.Failed {
+		t.Fatalf("expected record.Failed to be true for HTTP 500 status")
 	}
 }
 

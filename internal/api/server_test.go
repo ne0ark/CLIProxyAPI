@@ -465,3 +465,59 @@ func TestServerUpdateClientsAppliesFeatureFlags(t *testing.T) {
 		t.Fatal("expected gemini.attach-default-safety-settings to return to default after hot reload")
 	}
 }
+
+func TestServerUpdateClientsKeepsLocalManagementPasswordEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: []string{"test-key"},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	accessManager := sdkaccess.NewManager()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	server := NewServer(cfg, authManager, accessManager, configPath, WithLocalManagementPassword("local-password"))
+
+	if !server.managementRoutesEnabled.Load() {
+		t.Fatal("expected local management password to enable management routes at startup")
+	}
+
+	var updated proxyconfig.Config
+	raw, err := yaml.Marshal(server.cfg)
+	if err != nil {
+		t.Fatalf("failed to copy server config: %v", err)
+	}
+	if err := yaml.Unmarshal(raw, &updated); err != nil {
+		t.Fatalf("failed to decode copied server config: %v", err)
+	}
+	updated.RemoteManagement.SecretKey = ""
+
+	server.UpdateClients(&updated)
+
+	if !server.managementRoutesEnabled.Load() {
+		t.Fatal("expected local management password to keep management routes enabled after hot reload")
+	}
+	if server.usageQueue == nil || !server.usageQueue.Enabled() {
+		t.Fatal("expected redis queue to remain enabled while local management password is configured")
+	}
+	if server.mgmt == nil {
+		t.Fatal("expected management handler to be initialized")
+	}
+	allowed, statusCode, errMsg := server.mgmt.AuthenticateManagementKey("127.0.0.1", true, "local-password")
+	if !allowed || statusCode != 0 || errMsg != "" {
+		t.Fatalf("expected local management password auth to succeed after hot reload, got allowed=%t status=%d msg=%q", allowed, statusCode, errMsg)
+	}
+}

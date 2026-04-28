@@ -251,7 +251,8 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		h.attemptsMu.Unlock()
 	}
 
-	if secretHash == "" && envSecret == "" {
+	hasLocalPassword := localClient && h.localPassword != ""
+	if secretHash == "" && envSecret == "" && !hasLocalPassword {
 		return false, http.StatusForbidden, "remote management key not set"
 	}
 

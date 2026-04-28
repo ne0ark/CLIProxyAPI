@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
@@ -20,8 +22,11 @@ type UsageReporter struct {
 	model       string
 	authID      string
 	authIndex   string
+	authType    string
 	apiKey      string
 	source      string
+	endpoint    string
+	requestID   string
 	requestedAt time.Time
 	once        sync.Once
 }
@@ -34,6 +39,9 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		requestedAt: time.Now(),
 		apiKey:      apiKey,
 		source:      resolveUsageSource(auth, apiKey),
+		authType:    resolveUsageAuthType(auth),
+		endpoint:    resolveUsageEndpoint(ctx),
+		requestID:   resolveUsageRequestID(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -72,6 +80,7 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	detail = normalizeUsageDetailTotal(detail)
+	failed = resolveUsageFailure(ctx, failed)
 	r.once.Do(func() {
 		usage.PublishRecord(ctx, r.buildRecord(detail, failed))
 	})
@@ -103,8 +112,9 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 	if r == nil {
 		return
 	}
+	failed := resolveUsageFailure(ctx, false)
 	r.once.Do(func() {
-		usage.PublishRecord(ctx, r.buildRecord(usage.Detail{}, false))
+		usage.PublishRecord(ctx, r.buildRecord(usage.Detail{}, failed))
 	})
 }
 
@@ -126,6 +136,9 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:      r.apiKey,
 		AuthID:      r.authID,
 		AuthIndex:   r.authIndex,
+		AuthType:    r.authType,
+		Endpoint:    r.endpoint,
+		RequestID:   r.requestID,
 		RequestedAt: r.requestedAt,
 		Latency:     r.latency(),
 		Failed:      failed,
@@ -224,6 +237,82 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 		return trimmed
 	}
 	return ""
+}
+
+func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Attributes != nil {
+		if authKind := normalizeUsageAuthType(strings.TrimSpace(auth.Attributes["auth_kind"])); authKind != "" {
+			return authKind
+		}
+	}
+	kind, _ := auth.AccountInfo()
+	return normalizeUsageAuthType(kind)
+}
+
+func normalizeUsageAuthType(kind string) string {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "api_key" {
+		return "apikey"
+	}
+	return kind
+}
+
+func resolveUsageFailure(ctx context.Context, failed bool) bool {
+	if failed {
+		return true
+	}
+	if ctx == nil {
+		return false
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return false
+	}
+	status := ginCtx.Writer.Status()
+	if status == 0 {
+		return false
+	}
+	return status >= http.StatusBadRequest
+}
+
+func resolveUsageRequestID(ctx context.Context) string {
+	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+	if requestID != "" {
+		return requestID
+	}
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	return strings.TrimSpace(internallogging.GetGinRequestID(ginCtx))
+}
+
+func resolveUsageEndpoint(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+	path := strings.TrimSpace(ginCtx.FullPath())
+	if path == "" && ginCtx.Request.URL != nil {
+		path = strings.TrimSpace(ginCtx.Request.URL.Path)
+	}
+	if path == "" {
+		return ""
+	}
+	method := strings.TrimSpace(ginCtx.Request.Method)
+	if method == "" {
+		return path
+	}
+	return method + " " + path
 }
 
 func ParseCodexUsage(data []byte) (usage.Detail, bool) {

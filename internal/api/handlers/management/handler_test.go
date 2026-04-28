@@ -36,3 +36,26 @@ func TestAuthenticateManagementKey_LocalhostIPBan_BlocksCorrectKeyDuringBan(t *t
 		t.Fatalf("unexpected banned message: %q", errMsg)
 	}
 }
+
+func TestAuthenticateManagementKey_LocalPasswordOnlyAllowsLocalhost(t *testing.T) {
+	h := &Handler{
+		cfg:            &config.Config{},
+		failedAttempts: make(map[string]*attemptInfo),
+		localPassword:  "local-password",
+	}
+
+	allowed, statusCode, errMsg := h.AuthenticateManagementKey("127.0.0.1", true, "local-password")
+	if !allowed || statusCode != 0 || errMsg != "" {
+		t.Fatalf("expected localhost local password auth to succeed, got allowed=%t status=%d msg=%q", allowed, statusCode, errMsg)
+	}
+
+	allowed, statusCode, errMsg = h.AuthenticateManagementKey("127.0.0.1", true, "wrong")
+	if allowed || statusCode != http.StatusUnauthorized || errMsg != "invalid management key" {
+		t.Fatalf("expected wrong localhost local password to fail with unauthorized, got allowed=%t status=%d msg=%q", allowed, statusCode, errMsg)
+	}
+
+	allowed, statusCode, errMsg = h.AuthenticateManagementKey("10.0.0.5", false, "local-password")
+	if allowed || statusCode != http.StatusForbidden || errMsg != "remote management disabled" {
+		t.Fatalf("expected remote client to stay blocked without remote management secret, got allowed=%t status=%d msg=%q", allowed, statusCode, errMsg)
+	}
+}
