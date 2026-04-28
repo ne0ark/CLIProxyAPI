@@ -7,6 +7,10 @@ on:
       - synchronize
       - reopened
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   ensure-no-translator-changes:
     runs-on: ubuntu-latest
@@ -20,9 +24,78 @@ jobs:
         with:
           files: |
             internal/translator/**
-      - name: Fail when restricted paths change
+      - name: Check locked translator bundle exception
         if: steps.changed-files.outputs.any_changed == 'true'
+        id: locked-bundle-exception
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const allowedHeadRepo = `${context.repo.owner}/${context.repo.repo}`;
+            const allowedHeadRef = "sync/release-bundle-v6.9.40-reasoning-signature";
+            const allowedTranslatorFiles = new Set([
+              "internal/translator/codex/claude/codex_claude_request.go",
+              "internal/translator/codex/claude/codex_claude_request_test.go",
+              "internal/translator/codex/claude/codex_claude_response.go",
+              "internal/translator/codex/claude/codex_claude_response_test.go",
+            ]);
+
+            const pr = context.payload.pull_request;
+            if (pr.head.repo.full_name !== allowedHeadRepo) {
+              core.info(`Head repo ${pr.head.repo.full_name} is not eligible for the locked translator bundle exception.`);
+              core.setOutput("allowed", "false");
+              return;
+            }
+
+            if (pr.head.ref !== allowedHeadRef) {
+              core.info(`Head ref ${pr.head.ref} is not eligible for the locked translator bundle exception.`);
+              core.setOutput("allowed", "false");
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const changedFiles = files
+              .map((file) => file.filename)
+              .filter((path) => typeof path === "string");
+            const changedTranslatorFiles = changedFiles.filter((path) =>
+              path.startsWith("internal/translator/"),
+            );
+
+            if (changedTranslatorFiles.length === 0) {
+              core.info("No translator files changed after API verification.");
+              core.setOutput("allowed", "false");
+              return;
+            }
+
+            const unexpectedFiles = [...new Set(changedFiles)].filter(
+              (path) => !allowedTranslatorFiles.has(path),
+            );
+            const missingFiles = [...allowedTranslatorFiles].filter(
+              (path) => !changedFiles.includes(path),
+            );
+
+            if (unexpectedFiles.length > 0) {
+              core.info(`Locked translator bundle touched unexpected files: ${unexpectedFiles.join(", ")}`);
+              core.setOutput("allowed", "false");
+              return;
+            }
+
+            if (missingFiles.length > 0) {
+              core.info(`Locked translator bundle is missing approved files: ${missingFiles.join(", ")}`);
+              core.setOutput("allowed", "false");
+              return;
+            }
+
+            core.info("Translator changes match the locked reasoning-signature bundle exception.");
+            core.setOutput("allowed", "true");
+      - name: Fail when restricted paths change
+        if: steps.changed-files.outputs.any_changed == 'true' && steps.locked-bundle-exception.outputs.allowed != 'true'
         run: |
           echo "Changes under internal/translator are not allowed in pull requests."
-          echo "You need to create an issue for our maintenance team to make the necessary changes."
+          echo "The only exception is the locked same-repo branch sync/release-bundle-v6.9.40-reasoning-signature touching the approved reasoning-signature translator files."
           exit 1
