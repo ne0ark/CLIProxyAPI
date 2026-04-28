@@ -71,6 +71,11 @@ func registerSchedulerModels(t *testing.T, provider string, model string, authID
 	})
 }
 
+func schedulerScopedAuthID(t *testing.T, id string) string {
+	t.Helper()
+	return t.Name() + "/" + id
+}
+
 func TestSchedulerPick_RoundRobinHighestPriority(t *testing.T) {
 	t.Parallel()
 
@@ -372,14 +377,17 @@ func TestSchedulerPickMixed_DisallowFreeAuthIgnoresSkippedTierForProviderRotatio
 	t.Parallel()
 
 	model := "gpt-5.4-mini"
-	registerSchedulerModels(t, "codex", model, "codex-free", "codex-plus")
-	registerSchedulerModels(t, "gemini", model, "gemini-high")
+	codexFreeID := schedulerScopedAuthID(t, "codex-free")
+	codexPlusID := schedulerScopedAuthID(t, "codex-plus")
+	geminiHighID := schedulerScopedAuthID(t, "gemini-high")
+	registerSchedulerModels(t, "codex", model, codexFreeID, codexPlusID)
+	registerSchedulerModels(t, "gemini", model, geminiHighID)
 
 	scheduler := newSchedulerForTest(
 		&RoundRobinSelector{},
-		&Auth{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"priority": "10", "plan_type": "free"}},
-		&Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}},
-		&Auth{ID: "gemini-high", Provider: "gemini", Attributes: map[string]string{"priority": "7"}},
+		&Auth{ID: codexFreeID, Provider: "codex", Attributes: map[string]string{"priority": "10", "plan_type": "free"}},
+		&Auth{ID: codexPlusID, Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}},
+		&Auth{ID: geminiHighID, Provider: "gemini", Attributes: map[string]string{"priority": "7"}},
 	)
 
 	opts := cliproxyexecutor.Options{
@@ -395,8 +403,8 @@ func TestSchedulerPickMixed_DisallowFreeAuthIgnoresSkippedTierForProviderRotatio
 	if provider != "codex" {
 		t.Fatalf("pickMixed() provider = %q, want %q", provider, "codex")
 	}
-	if got.ID != "codex-plus" {
-		t.Fatalf("pickMixed() auth.ID = %q, want %q", got.ID, "codex-plus")
+	if got.ID != codexPlusID {
+		t.Fatalf("pickMixed() auth.ID = %q, want %q", got.ID, codexPlusID)
 	}
 }
 
@@ -404,21 +412,24 @@ func TestSchedulerPickMixed_DisallowFreeAuthUsesEligibleWeights(t *testing.T) {
 	t.Parallel()
 
 	model := "gpt-5.4-mini"
-	registerSchedulerModels(t, "codex", model, "codex-free", "codex-plus")
-	registerSchedulerModels(t, "gemini", model, "gemini-high")
+	codexFreeID := schedulerScopedAuthID(t, "codex-free")
+	codexPlusID := schedulerScopedAuthID(t, "codex-plus")
+	geminiHighID := schedulerScopedAuthID(t, "gemini-high")
+	registerSchedulerModels(t, "codex", model, codexFreeID, codexPlusID)
+	registerSchedulerModels(t, "gemini", model, geminiHighID)
 
 	scheduler := newSchedulerForTest(
 		&RoundRobinSelector{},
-		&Auth{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "free"}},
-		&Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}},
-		&Auth{ID: "gemini-high", Provider: "gemini", Attributes: map[string]string{"priority": "7"}},
+		&Auth{ID: codexFreeID, Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "free"}},
+		&Auth{ID: codexPlusID, Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}},
+		&Auth{ID: geminiHighID, Provider: "gemini", Attributes: map[string]string{"priority": "7"}},
 	)
 
 	opts := cliproxyexecutor.Options{
 		Metadata: map[string]any{cliproxyexecutor.DisallowFreeAuthMetadataKey: true},
 	}
 	wantProviders := []string{"codex", "gemini", "codex", "gemini"}
-	wantIDs := []string{"codex-plus", "gemini-high", "codex-plus", "gemini-high"}
+	wantIDs := []string{codexPlusID, geminiHighID, codexPlusID, geminiHighID}
 	for index := range wantProviders {
 		got, provider, errPick := scheduler.pickMixed(context.Background(), []string{"codex", "gemini"}, model, opts, nil)
 		if errPick != nil {
@@ -440,25 +451,27 @@ func TestSchedulerPickMixed_DisallowFreeAuthPreservesCooldownError(t *testing.T)
 	t.Parallel()
 
 	model := "gpt-5.4-mini"
+	codexFreeID := schedulerScopedAuthID(t, "codex-free")
+	codexPlusID := schedulerScopedAuthID(t, "codex-plus")
 	reg := registry.GetGlobalRegistry()
-	reg.RegisterClient("codex-free", "codex", []*registry.ModelInfo{{ID: model}})
-	reg.RegisterClient("codex-plus", "codex", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(codexFreeID, "codex", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient(codexPlusID, "codex", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() {
-		reg.UnregisterClient("codex-free")
-		reg.UnregisterClient("codex-plus")
+		reg.UnregisterClient(codexFreeID)
+		reg.UnregisterClient(codexPlusID)
 	})
 
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.executors["codex"] = schedulerTestExecutor{}
-	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "free"}}); errRegister != nil {
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: codexFreeID, Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "free"}}); errRegister != nil {
 		t.Fatalf("Register(codex-free) error = %v", errRegister)
 	}
-	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}}); errRegister != nil {
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: codexPlusID, Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}}); errRegister != nil {
 		t.Fatalf("Register(codex-plus) error = %v", errRegister)
 	}
 
 	manager.MarkResult(context.Background(), Result{
-		AuthID:   "codex-plus",
+		AuthID:   codexPlusID,
 		Provider: "codex",
 		Model:    model,
 		Success:  false,
