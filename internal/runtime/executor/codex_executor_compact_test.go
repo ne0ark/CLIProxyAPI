@@ -71,9 +71,52 @@ func TestCodexExecutorCompactAddsDefaultInstructions(t *testing.T) {
 			if gjson.GetBytes(gotBody, "instructions").String() != "" {
 				t.Fatalf("instructions = %q, want empty string", gjson.GetBytes(gotBody, "instructions").String())
 			}
+			if gjson.GetBytes(gotBody, "tools").Exists() {
+				t.Fatalf("expected compact request body to keep tools unchanged, got %s", gjson.GetBytes(gotBody, "tools").Raw)
+			}
 			if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
 				t.Fatalf("payload = %s", string(resp.Payload))
 			}
 		})
+	}
+}
+
+func TestCodexExecutorCompactDoesNotInjectImageGenerationTool(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","input":"hello","tools":[{"type":"function","name":"get_weather","parameters":{}}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Alt:          "responses/compact",
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	tools := gjson.GetBytes(gotBody, "tools")
+	if !tools.IsArray() {
+		t.Fatalf("expected tools array in compact request body, got %v", tools.Type)
+	}
+	if len(tools.Array()) != 1 {
+		t.Fatalf("expected compact request body to preserve a single tool, got %d", len(tools.Array()))
+	}
+	if tools.Array()[0].Get("type").String() != "function" {
+		t.Fatalf("expected compact request tool type=function, got %s", tools.Array()[0].Get("type").String())
 	}
 }

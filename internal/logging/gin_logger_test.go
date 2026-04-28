@@ -67,3 +67,9 @@ func TestIsAIAPIPathIncludesImages(t *testing.T) {
 		t.Fatalf("expected /v1/images/edits to be treated as AI API path")
 	}
 }
+
+func TestIsAIAPIPathIncludesBackendCodexResponses(t *testing.T) {
+	if !isAIAPIPath("/backend-api/codex/responses") {
+		t.Fatalf("expected /backend-api/codex/responses to be treated as AI API path")
+	}
+}

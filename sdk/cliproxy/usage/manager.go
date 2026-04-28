@@ -19,7 +19,11 @@ type Record struct {
 	RequestedAt time.Time
 	Latency     time.Duration
 	Failed      bool
-	Detail      Detail
+	// AdditionalModel marks usage that belongs to a secondary model invoked within
+	// the same upstream request. Consumers should avoid counting it as a second
+	// top-level request while still attributing its token usage.
+	AdditionalModel bool
+	Detail          Detail
 }
 
 // Detail holds the token usage breakdown.
