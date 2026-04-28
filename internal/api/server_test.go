@@ -241,6 +241,16 @@ func TestServer_ModelACLDiscoveryAndWebsocketBehavior(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("/v1/responses websocket upgrade expected 403, got %d body=%s", rr.Code, rr.Body.String())
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/backend-api/codex/responses", nil)
+	req.Header.Set("Authorization", "Bearer sk-empty")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("/backend-api/codex/responses websocket upgrade expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
 }
 
 func TestAmpProviderModelRoutes(t *testing.T) {

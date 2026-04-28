@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -330,6 +331,150 @@ func TestManager_PickNextMixed_UsesWeightedProviderRotationBeforeCredentialRotat
 		if got.ID != wantIDs[index] {
 			t.Fatalf("pickNextMixed() #%d auth.ID = %q, want %q", index, got.ID, wantIDs[index])
 		}
+	}
+}
+
+func TestManager_PickNextMixed_DisallowFreeAuthSkipsCodexFreePlan(t *testing.T) {
+	t.Parallel()
+
+	model := "gpt-5.4-mini"
+	registerSchedulerModels(t, "codex", model, "codex-a-free", "codex-b-plus")
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["codex"] = schedulerTestExecutor{}
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "codex-a-free", Provider: "codex", Attributes: map[string]string{"plan_type": "free"}}); errRegister != nil {
+		t.Fatalf("Register(codex-a-free) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "codex-b-plus", Provider: "codex", Attributes: map[string]string{"plan_type": "plus"}}); errRegister != nil {
+		t.Fatalf("Register(codex-b-plus) error = %v", errRegister)
+	}
+
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.DisallowFreeAuthMetadataKey: true},
+	}
+	got, _, provider, errPick := manager.pickNextMixed(context.Background(), []string{"codex"}, model, opts, map[string]struct{}{})
+	if errPick != nil {
+		t.Fatalf("pickNextMixed() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatalf("pickNextMixed() auth = nil")
+	}
+	if provider != "codex" {
+		t.Fatalf("pickNextMixed() provider = %q, want %q", provider, "codex")
+	}
+	if got.ID != "codex-b-plus" {
+		t.Fatalf("pickNextMixed() auth.ID = %q, want %q", got.ID, "codex-b-plus")
+	}
+}
+
+func TestSchedulerPickMixed_DisallowFreeAuthIgnoresSkippedTierForProviderRotation(t *testing.T) {
+	t.Parallel()
+
+	model := "gpt-5.4-mini"
+	registerSchedulerModels(t, "codex", model, "codex-free", "codex-plus")
+	registerSchedulerModels(t, "gemini", model, "gemini-high")
+
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		&Auth{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"priority": "10", "plan_type": "free"}},
+		&Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}},
+		&Auth{ID: "gemini-high", Provider: "gemini", Attributes: map[string]string{"priority": "7"}},
+	)
+
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.DisallowFreeAuthMetadataKey: true},
+	}
+	got, provider, errPick := scheduler.pickMixed(context.Background(), []string{"codex", "gemini"}, model, opts, nil)
+	if errPick != nil {
+		t.Fatalf("pickMixed() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatalf("pickMixed() auth = nil")
+	}
+	if provider != "codex" {
+		t.Fatalf("pickMixed() provider = %q, want %q", provider, "codex")
+	}
+	if got.ID != "codex-plus" {
+		t.Fatalf("pickMixed() auth.ID = %q, want %q", got.ID, "codex-plus")
+	}
+}
+
+func TestSchedulerPickMixed_DisallowFreeAuthUsesEligibleWeights(t *testing.T) {
+	t.Parallel()
+
+	model := "gpt-5.4-mini"
+	registerSchedulerModels(t, "codex", model, "codex-free", "codex-plus")
+	registerSchedulerModels(t, "gemini", model, "gemini-high")
+
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		&Auth{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "free"}},
+		&Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}},
+		&Auth{ID: "gemini-high", Provider: "gemini", Attributes: map[string]string{"priority": "7"}},
+	)
+
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.DisallowFreeAuthMetadataKey: true},
+	}
+	wantProviders := []string{"codex", "gemini", "codex", "gemini"}
+	wantIDs := []string{"codex-plus", "gemini-high", "codex-plus", "gemini-high"}
+	for index := range wantProviders {
+		got, provider, errPick := scheduler.pickMixed(context.Background(), []string{"codex", "gemini"}, model, opts, nil)
+		if errPick != nil {
+			t.Fatalf("pickMixed() #%d error = %v", index, errPick)
+		}
+		if got == nil {
+			t.Fatalf("pickMixed() #%d auth = nil", index)
+		}
+		if provider != wantProviders[index] {
+			t.Fatalf("pickMixed() #%d provider = %q, want %q", index, provider, wantProviders[index])
+		}
+		if got.ID != wantIDs[index] {
+			t.Fatalf("pickMixed() #%d auth.ID = %q, want %q", index, got.ID, wantIDs[index])
+		}
+	}
+}
+
+func TestSchedulerPickMixed_DisallowFreeAuthPreservesCooldownError(t *testing.T) {
+	t.Parallel()
+
+	model := "gpt-5.4-mini"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("codex-free", "codex", []*registry.ModelInfo{{ID: model}})
+	reg.RegisterClient("codex-plus", "codex", []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		reg.UnregisterClient("codex-free")
+		reg.UnregisterClient("codex-plus")
+	})
+
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["codex"] = schedulerTestExecutor{}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "codex-free", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "free"}}); errRegister != nil {
+		t.Fatalf("Register(codex-free) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "codex-plus", Provider: "codex", Attributes: map[string]string{"priority": "7", "plan_type": "plus"}}); errRegister != nil {
+		t.Fatalf("Register(codex-plus) error = %v", errRegister)
+	}
+
+	manager.MarkResult(context.Background(), Result{
+		AuthID:   "codex-plus",
+		Provider: "codex",
+		Model:    model,
+		Success:  false,
+		Error:    &Error{HTTPStatus: 429, Message: "quota"},
+	})
+
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.DisallowFreeAuthMetadataKey: true},
+	}
+	_, _, _, errPick := manager.pickNextMixed(context.Background(), []string{"codex", "gemini"}, model, opts, nil)
+	if errPick == nil {
+		t.Fatal("pickNextMixed() error = nil, want cooldown error")
+	}
+	var cooldownErr *modelCooldownError
+	if !errors.As(errPick, &cooldownErr) {
+		t.Fatalf("pickNextMixed() error = %T %v, want modelCooldownError", errPick, errPick)
 	}
 }
 

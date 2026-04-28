@@ -94,3 +94,56 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 		t.Fatalf("details len = %d, want 1", len(details))
 	}
 }
+
+func TestRequestStatisticsRecordAdditionalModelDoesNotIncrementTopLevelRequests(t *testing.T) {
+	stats := NewRequestStatistics()
+	timestamp := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "test-key",
+		Model:       "gpt-5.4",
+		RequestedAt: timestamp,
+		Detail: coreusage.Detail{
+			InputTokens:  10,
+			OutputTokens: 20,
+			TotalTokens:  30,
+		},
+	})
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:          "test-key",
+		Model:           "gpt-image-2",
+		RequestedAt:     timestamp,
+		AdditionalModel: true,
+		Detail: coreusage.Detail{
+			InputTokens: 4,
+			TotalTokens: 4,
+		},
+	})
+
+	snapshot := stats.Snapshot()
+	if snapshot.TotalRequests != 1 {
+		t.Fatalf("snapshot.TotalRequests = %d, want 1", snapshot.TotalRequests)
+	}
+	if snapshot.TotalTokens != 34 {
+		t.Fatalf("snapshot.TotalTokens = %d, want 34", snapshot.TotalTokens)
+	}
+	api := snapshot.APIs["test-key"]
+	if api.TotalRequests != 1 {
+		t.Fatalf("api.TotalRequests = %d, want 1", api.TotalRequests)
+	}
+	if api.TotalTokens != 34 {
+		t.Fatalf("api.TotalTokens = %d, want 34", api.TotalTokens)
+	}
+	if api.Models["gpt-5.4"].TotalRequests != 1 {
+		t.Fatalf("primary model TotalRequests = %d, want 1", api.Models["gpt-5.4"].TotalRequests)
+	}
+	if api.Models["gpt-image-2"].TotalRequests != 1 {
+		t.Fatalf("additional model TotalRequests = %d, want 1", api.Models["gpt-image-2"].TotalRequests)
+	}
+	if got := snapshot.RequestsByDay["2026-03-20"]; got != 1 {
+		t.Fatalf("requestsByDay = %d, want 1", got)
+	}
+	if got := snapshot.TokensByDay["2026-03-20"]; got != 34 {
+		t.Fatalf("tokensByDay = %d, want 34", got)
+	}
+}

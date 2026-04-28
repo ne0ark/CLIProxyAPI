@@ -89,12 +89,13 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	LatencyMs int64      `json:"latency_ms"`
-	Source    string     `json:"source"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	Timestamp       time.Time  `json:"timestamp"`
+	LatencyMs       int64      `json:"latency_ms"`
+	Source          string     `json:"source"`
+	AuthIndex       string     `json:"auth_index"`
+	Tokens          TokenStats `json:"tokens"`
+	Failed          bool       `json:"failed"`
+	AdditionalModel bool       `json:"additional_model,omitempty"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -178,17 +179,20 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if modelName == "" {
 		modelName = "unknown"
 	}
+	countRequest := !record.AdditionalModel
 	dayKey := timestamp.Format("2006-01-02")
 	hourKey := timestamp.Hour()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.totalRequests++
-	if success {
-		s.successCount++
-	} else {
-		s.failureCount++
+	if countRequest {
+		s.totalRequests++
+		if success {
+			s.successCount++
+		} else {
+			s.failureCount++
+		}
 	}
 	s.totalTokens += totalTokens
 
@@ -198,22 +202,27 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.apis[statsKey] = stats
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp: timestamp,
-		LatencyMs: normaliseLatency(record.Latency),
-		Source:    record.Source,
-		AuthIndex: record.AuthIndex,
-		Tokens:    detail,
-		Failed:    failed,
-	})
+		Timestamp:       timestamp,
+		LatencyMs:       normaliseLatency(record.Latency),
+		Source:          record.Source,
+		AuthIndex:       record.AuthIndex,
+		Tokens:          detail,
+		Failed:          failed,
+		AdditionalModel: record.AdditionalModel,
+	}, countRequest)
 
-	s.requestsByDay[dayKey]++
-	s.requestsByHour[hourKey]++
+	if countRequest {
+		s.requestsByDay[dayKey]++
+		s.requestsByHour[hourKey]++
+	}
 	s.tokensByDay[dayKey] += totalTokens
 	s.tokensByHour[hourKey] += totalTokens
 }
 
-func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
-	stats.TotalRequests++
+func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail, countAPIRequest bool) {
+	if countAPIRequest {
+		stats.TotalRequests++
+	}
 	stats.TotalTokens += detail.Tokens.TotalTokens
 	modelStatsValue, ok := stats.Models[model]
 	if !ok {
@@ -361,21 +370,26 @@ func (s *RequestStatistics) recordImported(apiName, modelName string, stats *api
 		totalTokens = 0
 	}
 
-	s.totalRequests++
-	if detail.Failed {
-		s.failureCount++
-	} else {
-		s.successCount++
+	countRequest := !detail.AdditionalModel
+	if countRequest {
+		s.totalRequests++
+		if detail.Failed {
+			s.failureCount++
+		} else {
+			s.successCount++
+		}
 	}
 	s.totalTokens += totalTokens
 
-	s.updateAPIStats(stats, modelName, detail)
+	s.updateAPIStats(stats, modelName, detail, countRequest)
 
 	dayKey := detail.Timestamp.Format("2006-01-02")
 	hourKey := detail.Timestamp.Hour()
 
-	s.requestsByDay[dayKey]++
-	s.requestsByHour[hourKey]++
+	if countRequest {
+		s.requestsByDay[dayKey]++
+		s.requestsByHour[hourKey]++
+	}
 	s.tokensByDay[dayKey] += totalTokens
 	s.tokensByHour[hourKey] += totalTokens
 }
@@ -384,13 +398,14 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%t|%t|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
 		detail.Source,
 		detail.AuthIndex,
 		detail.Failed,
+		detail.AdditionalModel,
 		tokens.InputTokens,
 		tokens.OutputTokens,
 		tokens.ReasoningTokens,

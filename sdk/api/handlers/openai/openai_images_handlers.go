@@ -276,11 +276,12 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 	}
 
 	responsesReq := buildImagesResponsesRequest(prompt, nil, tool)
+	executionModel := imageResponsesExecutionModel(responsesReq)
 	if stream {
-		h.streamImagesFromResponses(c, responsesReq, defaultImagesMainModel, requestedImageModel, responseFormat, "image_generation")
+		h.streamImagesFromResponses(c, responsesReq, executionModel, requestedImageModel, responseFormat, "image_generation")
 		return
 	}
-	h.collectImagesFromResponses(c, responsesReq, defaultImagesMainModel, requestedImageModel, responseFormat)
+	h.collectImagesFromResponses(c, responsesReq, executionModel, requestedImageModel, responseFormat)
 }
 
 func (h *OpenAIAPIHandler) ImagesEdits(c *gin.Context) {
@@ -446,11 +447,12 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	}
 
 	responsesReq := buildImagesResponsesRequest(prompt, images, tool)
+	executionModel := imageResponsesExecutionModel(responsesReq)
 	if stream {
-		h.streamImagesFromResponses(c, responsesReq, defaultImagesMainModel, requestedImageModel, responseFormat, "image_edit")
+		h.streamImagesFromResponses(c, responsesReq, executionModel, requestedImageModel, responseFormat, "image_edit")
 		return
 	}
-	h.collectImagesFromResponses(c, responsesReq, defaultImagesMainModel, requestedImageModel, responseFormat)
+	h.collectImagesFromResponses(c, responsesReq, executionModel, requestedImageModel, responseFormat)
 }
 
 func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
@@ -553,16 +555,18 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	}
 
 	responsesReq := buildImagesResponsesRequest(prompt, images, tool)
+	executionModel := imageResponsesExecutionModel(responsesReq)
 	if stream {
-		h.streamImagesFromResponses(c, responsesReq, defaultImagesMainModel, requestedImageModel, responseFormat, "image_edit")
+		h.streamImagesFromResponses(c, responsesReq, executionModel, requestedImageModel, responseFormat, "image_edit")
 		return
 	}
-	h.collectImagesFromResponses(c, responsesReq, defaultImagesMainModel, requestedImageModel, responseFormat)
+	h.collectImagesFromResponses(c, responsesReq, executionModel, requestedImageModel, responseFormat)
 }
 
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {
 	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
-	req, _ = sjson.SetBytes(req, "model", defaultImagesMainModel)
+	mainModel := defaultImagesMainModel
+	req, _ = sjson.SetBytes(req, "model", mainModel)
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
 	input, _ = sjson.SetBytes(input, "0.content.0.text", prompt)
@@ -586,10 +590,19 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 	return req
 }
 
+func imageResponsesExecutionModel(responsesReq []byte) string {
+	mainModel := strings.TrimSpace(gjson.GetBytes(responsesReq, "model").String())
+	if mainModel == "" {
+		return defaultImagesMainModel
+	}
+	return mainModel
+}
+
 func (h *OpenAIAPIHandler) collectImagesFromResponses(c *gin.Context, responsesReq []byte, executionModel, requestedModel, responseFormat string) {
 	c.Header("Content-Type", "application/json")
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx = handlers.WithDisallowFreeAuth(cliCtx)
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManagerAllowImageModel(cliCtx, "openai-response", executionModel, requestedModel, responsesReq, "")
@@ -779,6 +792,7 @@ func (h *OpenAIAPIHandler) streamImagesFromResponses(c *gin.Context, responsesRe
 	}
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx = handlers.WithDisallowFreeAuth(cliCtx)
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManagerAllowImageModel(cliCtx, "openai-response", executionModel, requestedModel, responsesReq, "")
 
 	setSSEHeaders := func() {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/tidwall/gjson"
 )
 
 func TestSSEFrameAccumulatorPreservesMultipleFrames(t *testing.T) {
@@ -36,5 +37,27 @@ func TestResolveImageToolModel_ResolvesAliasToBuiltInModel(t *testing.T) {
 
 	if got := resolveImageToolModel("image-alias"); got != defaultImagesToolModel {
 		t.Fatalf("resolveImageToolModel() = %q, want %q", got, defaultImagesToolModel)
+	}
+}
+
+func TestBuildImagesResponsesRequest_DoesNotPrefixExecutionModelFromToolModel(t *testing.T) {
+	t.Parallel()
+
+	tool := []byte(`{"type":"image_generation","model":"openai/gpt-image-2"}`)
+	req := buildImagesResponsesRequest("draw a cat", nil, tool)
+
+	if got := gjson.GetBytes(req, "model").String(); got != defaultImagesMainModel {
+		t.Fatalf("buildImagesResponsesRequest() model = %q, want %q", got, defaultImagesMainModel)
+	}
+}
+
+func TestBuildImagesResponsesRequest_DefaultsExecutionModelWithoutToolPrefix(t *testing.T) {
+	t.Parallel()
+
+	tool := []byte(`{"type":"image_generation","model":"gpt-image-2"}`)
+	req := buildImagesResponsesRequest("draw a cat", nil, tool)
+
+	if got := gjson.GetBytes(req, "model").String(); got != defaultImagesMainModel {
+		t.Fatalf("buildImagesResponsesRequest() model = %q, want %q", got, defaultImagesMainModel)
 	}
 }

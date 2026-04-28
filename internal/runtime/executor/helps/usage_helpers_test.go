@@ -47,6 +47,29 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 	}
 }
 
+func TestParseCodexImageToolUsage(t *testing.T) {
+	data := []byte(`{"response":{"tool_usage":{"image_gen":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}}}`)
+	detail, ok := ParseCodexImageToolUsage(data)
+	if !ok {
+		t.Fatal("expected image tool usage to be parsed")
+	}
+	if detail.InputTokens != 3 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 3)
+	}
+	if detail.OutputTokens != 4 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 4)
+	}
+	if detail.TotalTokens != 7 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 7)
+	}
+	if detail.CachedTokens != 2 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 2)
+	}
+	if detail.ReasoningTokens != 1 {
+		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 1)
+	}
+}
+
 func TestParseOpenAIStreamUsageChatCompletions(t *testing.T) {
 	line := []byte(`data: {"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)
 	detail, ok := ParseOpenAIStreamUsage(line)
@@ -194,6 +217,28 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
+	}
+}
+
+func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
+	reporter := &UsageReporter{
+		provider:    "codex",
+		model:       "gpt-5.4",
+		requestedAt: time.Now(),
+	}
+
+	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{}); ok {
+		t.Fatalf("expected all-zero token usage to be skipped")
+	}
+	record, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{InputTokens: 2})
+	if !ok {
+		t.Fatalf("expected non-zero input token usage to be recorded")
+	}
+	if !record.AdditionalModel {
+		t.Fatalf("expected additional model record to be marked as additional")
+	}
+	if _, ok := reporter.buildAdditionalModelRecord("gpt-image-2", usage.Detail{CachedTokens: 2}); !ok {
+		t.Fatalf("expected non-zero cached token usage to be recorded")
 	}
 }
 
