@@ -117,6 +117,43 @@ func TestClaudeExecutorExecute_PreCloakedInputNotRewrittenWhenCloakingDisabled(t
 	assertPreCloakedCacheControlUnchanged(t, seenBody)
 }
 
+func TestClaudeExecutorExecuteStream_PreCloakedInputNotRewrittenWhenCloakingDisabled(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":    "key-123",
+		"base_url":   server.URL,
+		"cloak_mode": "never",
+	}}
+	payload := preCloakedCacheControlPassThroughPayload()
+	if !isClaudeCodeCloakedPayload(payload) {
+		t.Fatal("test payload should start pre-cloaked")
+	}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream chunk error: %v", chunk.Err)
+		}
+	}
+
+	assertPreCloakedCacheControlUnchanged(t, seenBody)
+}
+
 func nonCloakedCacheControlRewritePayload() []byte {
 	return []byte(`{
 		"system": [

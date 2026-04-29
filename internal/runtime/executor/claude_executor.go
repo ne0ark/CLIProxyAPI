@@ -233,6 +233,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+	body = helps.StripSamplingParamsForOpus47(body, baseModel)
 	body = normalizeClaudeTemperatureForThinking(body)
 
 	// Only requests newly cloaked by this proxy should be canonicalized into the
@@ -256,6 +257,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
+	extraBetas = helps.EnsureTaskBudgetsBeta(extraBetas, body, baseModel)
 	bodyForTranslation := body
 	bodyForUpstream := body
 	oauthToken := isClaudeOAuthToken(apiKey)
@@ -442,6 +444,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+	body = helps.StripSamplingParamsForOpus47(body, baseModel)
 	body = normalizeClaudeTemperatureForThinking(body)
 
 	// Only requests newly cloaked by this proxy should be canonicalized into the
@@ -462,6 +465,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
+	extraBetas = helps.EnsureTaskBudgetsBeta(extraBetas, body, baseModel)
 	bodyForTranslation := body
 	bodyForUpstream := body
 	oauthToken := isClaudeOAuthToken(apiKey)
@@ -654,10 +658,12 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	// Keep count_tokens requests compatible with Anthropic cache-control constraints too.
 	body = enforceCacheControlLimit(body, 4)
 	body = normalizeCacheControlTTL(body)
+	body = helps.StripSamplingParamsForOpus47(body, baseModel)
 
 	// Extract betas from body and convert to header (for count_tokens too)
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
+	extraBetas = helps.EnsureTaskBudgetsBeta(extraBetas, body, baseModel)
 	oauthToken := isClaudeOAuthToken(apiKey)
 	clientSource := detectOAuthClientSource(getClientUserAgent(ctx))
 	if oauthToken && !auth.ToolPrefixDisabled() {
@@ -1030,16 +1036,17 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	if len(extraBetas) > 0 {
 		existingSet := make(map[string]bool)
 		for _, b := range strings.Split(baseBetas, ",") {
-			betaName := strings.TrimSpace(b)
+			betaName := strings.ToLower(strings.TrimSpace(b))
 			if betaName != "" {
 				existingSet[betaName] = true
 			}
 		}
 		for _, beta := range extraBetas {
 			beta = strings.TrimSpace(beta)
-			if beta != "" && !existingSet[beta] {
+			betaKey := strings.ToLower(beta)
+			if beta != "" && !existingSet[betaKey] {
 				baseBetas += "," + beta
-				existingSet[beta] = true
+				existingSet[betaKey] = true
 			}
 		}
 	}
