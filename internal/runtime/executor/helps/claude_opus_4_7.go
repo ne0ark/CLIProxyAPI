@@ -14,8 +14,15 @@ const TaskBudgetsBeta = "task-budgets-2026-03-13"
 
 // EnsureTaskBudgetsBeta appends the task-budget beta token when the request
 // body includes output_config.task_budget.
-func EnsureTaskBudgetsBeta(betas []string, body []byte) []string {
+func EnsureTaskBudgetsBeta(betas []string, body []byte, baseModel string) []string {
 	if !gjson.GetBytes(body, "output_config.task_budget").Exists() {
+		return betas
+	}
+	effectiveModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if effectiveModel == "" {
+		effectiveModel = baseModel
+	}
+	if !IsOpus47OrLater(effectiveModel) {
 		return betas
 	}
 	for _, beta := range betas {
@@ -62,6 +69,8 @@ func IsOpus47OrLater(model string) bool {
 	if digits.Len() == 0 {
 		return false
 	}
+	// Treat a full 8-digit numeric suffix (for example 20230101) as a date token,
+	// not as a valid Opus minor version, when the entire remaining suffix is digits.
 	if digits.Len() == len(rest) && digits.Len() == 8 {
 		return false
 	}

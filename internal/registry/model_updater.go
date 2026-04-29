@@ -230,6 +230,9 @@ func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
 				continue
 			}
 			key := strings.ToLower(id)
+			if _, ok := seen[key]; ok {
+				continue
+			}
 			if preserveEmbeddedIDs != nil {
 				if _, preserve := preserveEmbeddedIDs[key]; preserve {
 					if embeddedModel, ok := embeddedByID[key]; ok {

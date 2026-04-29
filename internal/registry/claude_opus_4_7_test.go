@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,17 @@ func TestMergeEmbeddedAdditions_OnlyReplaysContinuityAllowlist(t *testing.T) {
 	}
 }
 
+func TestMergeEmbeddedAdditions_DeduplicatesCaseInsensitiveRemoteIDs(t *testing.T) {
+	remote := parseStaticModelsCatalog(t, embeddedModelsJSON)
+	duplicateID := firstModelID(t, remote.Gemini)
+	remote.Gemini = append(remote.Gemini, &ModelInfo{ID: strings.ToUpper(duplicateID), DisplayName: "duplicate"})
+
+	merged := mergeEmbeddedAdditions(remote)
+	if got := countModelInfoID(merged.Gemini, duplicateID); got != 1 {
+		t.Fatalf("case-insensitive occurrences of %q = %d, want 1", duplicateID, got)
+	}
+}
+
 func assertCurrentMainClaudeOpus47Metadata(t *testing.T, model *ModelInfo) {
 	t.Helper()
 
@@ -181,4 +193,14 @@ func removeModelInfo(models []*ModelInfo, removeID string) []*ModelInfo {
 		filtered = append(filtered, model)
 	}
 	return filtered
+}
+
+func countModelInfoID(models []*ModelInfo, wantID string) int {
+	count := 0
+	for _, model := range models {
+		if model != nil && strings.EqualFold(model.ID, wantID) {
+			count++
+		}
+	}
+	return count
 }

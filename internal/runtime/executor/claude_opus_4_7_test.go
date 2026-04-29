@@ -183,6 +183,23 @@ func TestClaudeExecutor_TaskBudgetBetaOmittedWhenTaskBudgetMissing(t *testing.T)
 	}
 }
 
+func TestClaudeExecutor_TaskBudgetBetaOmittedForNonOpusModels(t *testing.T) {
+	payload := []byte(`{
+		"betas": ["custom-beta-1"],
+		"output_config": {"task_budget": {"budget_tokens": 2048}},
+		"messages": [{"role":"user","content":[{"type":"text","text":"hi"}]}]
+	}`)
+
+	for _, entryPoint := range []string{"Execute", "ExecuteStream", "CountTokens"} {
+		t.Run(entryPoint, func(t *testing.T) {
+			_, headers := captureClaudeUpstreamRequestForEntryPoint(t, entryPoint, context.Background(), "claude-sonnet-4", payload)
+			if counts := anthropicBetaCounts(headers.Get("Anthropic-Beta")); counts[helps.TaskBudgetsBeta] != 0 {
+				t.Fatalf("Anthropic-Beta = %q, want no %q token for non-Opus model", headers.Get("Anthropic-Beta"), helps.TaskBudgetsBeta)
+			}
+		})
+	}
+}
+
 func captureClaudeUpstreamRequestForEntryPoint(t *testing.T, entryPoint string, ctx context.Context, model string, payload []byte) ([]byte, http.Header) {
 	t.Helper()
 
@@ -199,7 +216,10 @@ func captureClaudeUpstreamRequestForEntryPointWithConfig(t *testing.T, entryPoin
 	var seenBody []byte
 	var seenHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Fatalf("failed to read upstream request body: %v", readErr)
+		}
 		seenBody = bytes.Clone(body)
 		seenHeaders = r.Header.Clone()
 
