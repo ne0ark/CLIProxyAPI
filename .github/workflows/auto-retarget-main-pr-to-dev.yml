@@ -29,10 +29,17 @@ jobs:
 
             const baseRef = pr.base?.ref;
             const headRef = pr.head?.ref;
+            const headRepoFullName = pr.head?.repo?.full_name;
             const desiredBase = "dev";
+            const missionMainReviewBranch = "mission/main-claude-slice-review";
 
             if (baseRef !== "main") {
               core.info(`PR #${prNumber} base is ${baseRef}; nothing to do.`);
+              return;
+            }
+
+            if (headRepoFullName === `${owner}/${repo}` && headRef === missionMainReviewBranch) {
+              core.info(`PR #${prNumber} is the same-repo ${missionMainReviewBranch} branch; skipping retarget.`);
               return;
             }
 
