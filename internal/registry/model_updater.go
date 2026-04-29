@@ -121,6 +121,8 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
+	parsed = mergeEmbeddedAdditions(parsed)
+
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -187,6 +189,65 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 		return &parsed, url
 	}
 	return nil, ""
+}
+
+// mergeEmbeddedAdditions returns a catalog that starts from the remote data and
+// re-appends only the small allowlisted set of embedded fallback models that
+// current dev must keep available when the remote catalog omits them. When the
+// same id exists in both places, the remote definition remains authoritative.
+func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
+	if remote == nil {
+		return remote
+	}
+
+	var embedded staticModelsJSON
+	if err := json.Unmarshal(embeddedModelsJSON, &embedded); err != nil {
+		log.Debugf("merge embedded additions: parse embedded models failed: %v", err)
+		return remote
+	}
+
+	merge := func(remoteList, embeddedList []*ModelInfo, allowed map[string]struct{}) []*ModelInfo {
+		if len(allowed) == 0 {
+			return remoteList
+		}
+		if len(embeddedList) == 0 {
+			return remoteList
+		}
+
+		seen := make(map[string]struct{}, len(remoteList))
+		for _, model := range remoteList {
+			if model == nil {
+				continue
+			}
+			seen[strings.TrimSpace(model.ID)] = struct{}{}
+		}
+
+		out := remoteList
+		for _, model := range embeddedList {
+			if model == nil {
+				continue
+			}
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				continue
+			}
+			if _, keep := allowed[id]; !keep {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			out = append(out, model)
+			seen[id] = struct{}{}
+		}
+		return out
+	}
+
+	remote.Claude = merge(remote.Claude, embedded.Claude, map[string]struct{}{
+		"claude-opus-4-7": {},
+	})
+
+	return remote
 }
 
 // detectChangedProviders compares two model catalogs and returns provider names

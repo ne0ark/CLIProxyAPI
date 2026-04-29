@@ -1144,6 +1144,174 @@ func TestClaudeExecutor_CountTokens_AppliesCacheControlGuards(t *testing.T) {
 	}
 }
 
+func captureClaudeUpstreamRequestForEntryPoint(t *testing.T, entryPoint string, ctx context.Context, model string, payload []byte) ([]byte, http.Header) {
+	t.Helper()
+
+	var seenBody []byte
+	var seenHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		seenHeaders = r.Header.Clone()
+
+		switch entryPoint {
+		case "Execute":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-opus-4-7","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+		case "ExecuteStream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+		case "CountTokens":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"input_tokens":42}`))
+		default:
+			t.Fatalf("unsupported entry point %q", entryPoint)
+		}
+	}))
+	defer server.Close()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	req := cliproxyexecutor.Request{
+		Model:   model,
+		Payload: payload,
+	}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}
+
+	switch entryPoint {
+	case "Execute":
+		_, err := executor.Execute(ctx, auth, req, opts)
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+	case "ExecuteStream":
+		result, err := executor.ExecuteStream(ctx, auth, req, opts)
+		if err != nil {
+			t.Fatalf("ExecuteStream error: %v", err)
+		}
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				t.Fatalf("ExecuteStream chunk error: %v", chunk.Err)
+			}
+		}
+	case "CountTokens":
+		_, err := executor.CountTokens(ctx, auth, req, opts)
+		if err != nil {
+			t.Fatalf("CountTokens error: %v", err)
+		}
+	default:
+		t.Fatalf("unsupported entry point %q", entryPoint)
+	}
+
+	if len(seenBody) == 0 {
+		t.Fatalf("%s did not send an upstream request body", entryPoint)
+	}
+	if seenHeaders == nil {
+		t.Fatalf("%s did not capture upstream request headers", entryPoint)
+	}
+	return seenBody, seenHeaders
+}
+
+func anthropicBetaCounts(header string) map[string]int {
+	counts := make(map[string]int)
+	for _, part := range strings.Split(header, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		counts[token]++
+	}
+	return counts
+}
+
+func TestClaudeExecutor_Opus47StripsSamplingParamsAcrossEntryPoints(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"temperature":0.7,"top_p":0.95,"top_k":40}`)
+
+	for _, entryPoint := range []string{"Execute", "ExecuteStream", "CountTokens"} {
+		t.Run(entryPoint, func(t *testing.T) {
+			body, _ := captureClaudeUpstreamRequestForEntryPoint(t, entryPoint, context.Background(), "claude-opus-4-7", payload)
+			for _, path := range []string{"temperature", "top_p", "top_k"} {
+				if gjson.GetBytes(body, path).Exists() {
+					t.Fatalf("%s payload still contains %s: %s", entryPoint, path, string(body))
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeExecutor_NonOpus47PreservesSamplingParamsAcrossEntryPoints(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"temperature":0.7,"top_p":0.95,"top_k":40}`)
+
+	for _, model := range []string{"claude-opus-4-6", "claude-sonnet-4"} {
+		t.Run(model, func(t *testing.T) {
+			for _, entryPoint := range []string{"Execute", "ExecuteStream", "CountTokens"} {
+				t.Run(entryPoint, func(t *testing.T) {
+					body, _ := captureClaudeUpstreamRequestForEntryPoint(t, entryPoint, context.Background(), model, payload)
+					if got := gjson.GetBytes(body, "temperature").Float(); got != 0.7 {
+						t.Fatalf("%s temperature = %v, want 0.7", entryPoint, got)
+					}
+					if got := gjson.GetBytes(body, "top_p").Float(); got != 0.95 {
+						t.Fatalf("%s top_p = %v, want 0.95", entryPoint, got)
+					}
+					if got := gjson.GetBytes(body, "top_k").Int(); got != 40 {
+						t.Fatalf("%s top_k = %d, want 40", entryPoint, got)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestClaudeExecutor_TaskBudgetBetaAddedAcrossEntryPoints(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"betas":["body-beta-1"],"output_config":{"task_budget":{"total_tokens":2048}}}`)
+	ctx := newClaudeHeaderTestRequest(t, http.Header{
+		"Anthropic-Beta": []string{"incoming-beta-1"},
+	}).Context()
+
+	for _, entryPoint := range []string{"Execute", "ExecuteStream", "CountTokens"} {
+		t.Run(entryPoint, func(t *testing.T) {
+			_, headers := captureClaudeUpstreamRequestForEntryPoint(t, entryPoint, ctx, "claude-opus-4-7", payload)
+			betaHeader := headers.Get("Anthropic-Beta")
+			counts := anthropicBetaCounts(betaHeader)
+			for _, beta := range []string{"incoming-beta-1", "body-beta-1", taskBudgetsBeta, "oauth-2025-04-20"} {
+				if counts[beta] != 1 {
+					t.Fatalf("%s Anthropic-Beta = %q, expected exactly one %q", entryPoint, betaHeader, beta)
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeExecutor_TaskBudgetBetaAbsentDoesNotInject(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"betas":["body-beta-1"]}`)
+
+	_, headers := captureClaudeUpstreamRequestForEntryPoint(t, "Execute", context.Background(), "claude-opus-4-7", payload)
+	betaHeader := headers.Get("Anthropic-Beta")
+	if counts := anthropicBetaCounts(betaHeader); counts[taskBudgetsBeta] != 0 {
+		t.Fatalf("Anthropic-Beta = %q, did not expect %q without task budget", betaHeader, taskBudgetsBeta)
+	}
+}
+
+func TestClaudeExecutor_TaskBudgetBetaNotDuplicatedWhenAlreadyPresent(t *testing.T) {
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"output_config":{"task_budget":{"total_tokens":2048}}}`)
+	ctx := newClaudeHeaderTestRequest(t, http.Header{
+		"Anthropic-Beta": []string{"incoming-beta-1," + taskBudgetsBeta},
+	}).Context()
+
+	_, headers := captureClaudeUpstreamRequestForEntryPoint(t, "Execute", ctx, "claude-opus-4-7", payload)
+	betaHeader := headers.Get("Anthropic-Beta")
+	if counts := anthropicBetaCounts(betaHeader); counts[taskBudgetsBeta] != 1 {
+		t.Fatalf("Anthropic-Beta = %q, expected exactly one %q", betaHeader, taskBudgetsBeta)
+	}
+}
+
 func hasTTLOrderingViolation(payload []byte) bool {
 	seen5m := false
 	violates := false
