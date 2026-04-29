@@ -67,3 +67,19 @@ func TestMergeEmbeddedAdditions_PreservesRemoteOpus47WhenDuplicateExists(t *test
 		t.Fatalf("remote thinking metadata was not preserved: %#v", model.Thinking)
 	}
 }
+
+func TestMergeEmbeddedAdditions_DoesNotRestoreNonFallbackClaudeModels(t *testing.T) {
+	remote := &staticModelsJSON{
+		Claude: []*ModelInfo{
+			{
+				ID:          "claude-3-5-sonnet-20241022",
+				DisplayName: "Claude 3.5 Sonnet",
+			},
+		},
+	}
+
+	merged := mergeEmbeddedAdditions(remote)
+	if model := findModelInfo(merged.Claude, "claude-opus-4-6"); model != nil {
+		t.Fatalf("expected non-fallback embedded model to stay absent, got %q", model.ID)
+	}
+}

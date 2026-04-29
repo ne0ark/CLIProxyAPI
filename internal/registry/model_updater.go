@@ -192,8 +192,9 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 }
 
 // mergeEmbeddedAdditions returns a catalog that starts from the remote data and
-// appends any model ids that exist only in the embedded catalog. When the same
-// id exists in both places, the remote definition remains authoritative.
+// re-appends only the small allowlisted set of embedded fallback models that
+// current dev must keep available when the remote catalog omits them. When the
+// same id exists in both places, the remote definition remains authoritative.
 func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
 	if remote == nil {
 		return remote
@@ -205,7 +206,10 @@ func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
 		return remote
 	}
 
-	merge := func(remoteList, embeddedList []*ModelInfo) []*ModelInfo {
+	merge := func(remoteList, embeddedList []*ModelInfo, allowed map[string]struct{}) []*ModelInfo {
+		if len(allowed) == 0 {
+			return remoteList
+		}
 		if len(embeddedList) == 0 {
 			return remoteList
 		}
@@ -227,6 +231,9 @@ func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
 			if id == "" {
 				continue
 			}
+			if _, keep := allowed[id]; !keep {
+				continue
+			}
 			if _, exists := seen[id]; exists {
 				continue
 			}
@@ -236,17 +243,9 @@ func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
 		return out
 	}
 
-	remote.Claude = merge(remote.Claude, embedded.Claude)
-	remote.Gemini = merge(remote.Gemini, embedded.Gemini)
-	remote.Vertex = merge(remote.Vertex, embedded.Vertex)
-	remote.GeminiCLI = merge(remote.GeminiCLI, embedded.GeminiCLI)
-	remote.AIStudio = merge(remote.AIStudio, embedded.AIStudio)
-	remote.CodexFree = merge(remote.CodexFree, embedded.CodexFree)
-	remote.CodexTeam = merge(remote.CodexTeam, embedded.CodexTeam)
-	remote.CodexPlus = merge(remote.CodexPlus, embedded.CodexPlus)
-	remote.CodexPro = merge(remote.CodexPro, embedded.CodexPro)
-	remote.Kimi = merge(remote.Kimi, embedded.Kimi)
-	remote.Antigravity = merge(remote.Antigravity, embedded.Antigravity)
+	remote.Claude = merge(remote.Claude, embedded.Claude, map[string]struct{}{
+		"claude-opus-4-7": {},
+	})
 
 	return remote
 }
