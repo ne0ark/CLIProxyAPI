@@ -121,6 +121,8 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
+	parsed = mergeEmbeddedAdditions(parsed)
+
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -187,6 +189,92 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 		return &parsed, url
 	}
 	return nil, ""
+}
+
+func mergeEmbeddedAdditions(remote *staticModelsJSON) *staticModelsJSON {
+	if remote == nil {
+		return remote
+	}
+
+	var embedded staticModelsJSON
+	if err := json.Unmarshal(embeddedModelsJSON, &embedded); err != nil {
+		log.Debugf("merge embedded additions: parse embedded models failed: %v", err)
+		return remote
+	}
+
+	merge := func(remoteList, embeddedList []*ModelInfo, preserveEmbeddedIDs map[string]struct{}) []*ModelInfo {
+		if len(embeddedList) == 0 {
+			return remoteList
+		}
+
+		embeddedByID := make(map[string]*ModelInfo, len(embeddedList))
+		for _, model := range embeddedList {
+			if model == nil {
+				continue
+			}
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				continue
+			}
+			embeddedByID[strings.ToLower(id)] = cloneModelInfo(model)
+		}
+
+		out := make([]*ModelInfo, 0, len(remoteList)+len(embeddedList))
+		seen := make(map[string]struct{}, len(remoteList)+len(embeddedList))
+		for _, model := range remoteList {
+			if model == nil {
+				continue
+			}
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				continue
+			}
+			key := strings.ToLower(id)
+			if preserveEmbeddedIDs != nil {
+				if _, preserve := preserveEmbeddedIDs[key]; preserve {
+					if embeddedModel, ok := embeddedByID[key]; ok {
+						out = append(out, embeddedModel)
+						seen[key] = struct{}{}
+						continue
+					}
+				}
+			}
+			out = append(out, model)
+			seen[key] = struct{}{}
+		}
+
+		for _, model := range embeddedList {
+			if model == nil {
+				continue
+			}
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				continue
+			}
+			key := strings.ToLower(id)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			out = append(out, cloneModelInfo(model))
+			seen[key] = struct{}{}
+		}
+		return out
+	}
+
+	remote.Claude = merge(remote.Claude, embedded.Claude, map[string]struct{}{
+		"claude-opus-4-7": {},
+	})
+	remote.Gemini = merge(remote.Gemini, embedded.Gemini, nil)
+	remote.Vertex = merge(remote.Vertex, embedded.Vertex, nil)
+	remote.GeminiCLI = merge(remote.GeminiCLI, embedded.GeminiCLI, nil)
+	remote.AIStudio = merge(remote.AIStudio, embedded.AIStudio, nil)
+	remote.CodexFree = merge(remote.CodexFree, embedded.CodexFree, nil)
+	remote.CodexTeam = merge(remote.CodexTeam, embedded.CodexTeam, nil)
+	remote.CodexPlus = merge(remote.CodexPlus, embedded.CodexPlus, nil)
+	remote.CodexPro = merge(remote.CodexPro, embedded.CodexPro, nil)
+	remote.Kimi = merge(remote.Kimi, embedded.Kimi, nil)
+	remote.Antigravity = merge(remote.Antigravity, embedded.Antigravity, nil)
+	return remote
 }
 
 // detectChangedProviders compares two model catalogs and returns provider names
