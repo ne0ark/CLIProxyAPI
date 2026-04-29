@@ -33,6 +33,20 @@ func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	assertGPT55ModelInfo(t, "lookup", model)
 }
 
+func TestClaudeStaticModelsIncludeOpus47CurrentMetadata(t *testing.T) {
+	model := findModelInfo(GetClaudeModels(), "claude-opus-4-7")
+	if model == nil {
+		t.Fatal("expected claude models to include claude-opus-4-7")
+	}
+	assertClaudeOpus47ModelInfo(t, "claude list", model)
+
+	lookup := LookupStaticModelInfo("claude-opus-4-7")
+	if lookup == nil {
+		t.Fatal("expected LookupStaticModelInfo to find claude-opus-4-7")
+	}
+	assertClaudeOpus47ModelInfo(t, "lookup", lookup)
+}
+
 func findModelInfo(models []*ModelInfo, id string) *ModelInfo {
 	for _, model := range models {
 		if model != nil && model.ID == id {
@@ -83,6 +97,45 @@ func assertGPT55ModelInfo(t *testing.T, source string, model *ModelInfo) {
 	}
 
 	want := []string{"low", "medium", "high", "xhigh"}
+	if len(model.Thinking.Levels) != len(want) {
+		t.Fatalf("%s thinking level count mismatch: got %d, want %d", source, len(model.Thinking.Levels), len(want))
+	}
+	for i, level := range want {
+		if model.Thinking.Levels[i] != level {
+			t.Fatalf("%s thinking level %d mismatch: got %q, want %q", source, i, model.Thinking.Levels[i], level)
+		}
+	}
+}
+
+func assertClaudeOpus47ModelInfo(t *testing.T, source string, model *ModelInfo) {
+	t.Helper()
+
+	if model.DisplayName != "Claude Opus 4.7" {
+		t.Fatalf("%s display name mismatch: got %q", source, model.DisplayName)
+	}
+	if model.Description != "Premium model combining maximum intelligence with practical performance" {
+		t.Fatalf("%s description mismatch: got %q", source, model.Description)
+	}
+	if model.ContextLength != 1000000 {
+		t.Fatalf("%s context length mismatch: got %d", source, model.ContextLength)
+	}
+	if model.MaxCompletionTokens != 128000 {
+		t.Fatalf("%s max completion tokens mismatch: got %d", source, model.MaxCompletionTokens)
+	}
+	if model.Thinking == nil {
+		t.Fatalf("%s missing thinking support", source)
+	}
+	if model.Thinking.Min != 1024 {
+		t.Fatalf("%s thinking min mismatch: got %d", source, model.Thinking.Min)
+	}
+	if model.Thinking.Max != 128000 {
+		t.Fatalf("%s thinking max mismatch: got %d", source, model.Thinking.Max)
+	}
+	if !model.Thinking.ZeroAllowed {
+		t.Fatalf("%s zero_allowed mismatch: got false, want true", source)
+	}
+
+	want := []string{"low", "medium", "high", "xhigh", "max"}
 	if len(model.Thinking.Levels) != len(want) {
 		t.Fatalf("%s thinking level count mismatch: got %d, want %d", source, len(model.Thinking.Levels), len(want))
 	}
