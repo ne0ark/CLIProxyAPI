@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -38,8 +39,8 @@ func TestIsOpus47OrLater(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		if got := isOpus47OrLater(testCase.model); got != testCase.want {
-			t.Fatalf("isOpus47OrLater(%q) = %v, want %v", testCase.model, got, testCase.want)
+		if got := helps.IsOpus47OrLater(testCase.model); got != testCase.want {
+			t.Fatalf("IsOpus47OrLater(%q) = %v, want %v", testCase.model, got, testCase.want)
 		}
 	}
 }
@@ -78,6 +79,70 @@ func TestClaudeExecutor_NonOpusClaudeModelsKeepSamplingFields(t *testing.T) {
 	}
 }
 
+func TestClaudeExecutor_PayloadOverrideToOpus47StripsSamplingFields(t *testing.T) {
+	payload := []byte(`{
+		"temperature": 0.2,
+		"top_p": 0.9,
+		"top_k": 17,
+		"messages": [{"role":"user","content":[{"type":"text","text":"hi"}]}]
+	}`)
+	cfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{{
+				Models: []config.PayloadModelRule{{
+					Name:     "claude-sonnet-4",
+					Protocol: "claude",
+				}},
+				Params: map[string]any{
+					"model": "claude-opus-4-7",
+				},
+			}},
+		},
+	}
+
+	for _, entryPoint := range []string{"Execute", "ExecuteStream"} {
+		t.Run(entryPoint, func(t *testing.T) {
+			seenBody, _ := captureClaudeUpstreamRequestForEntryPointWithConfig(t, entryPoint, context.Background(), "claude-sonnet-4", payload, cfg)
+			if got := gjson.GetBytes(seenBody, "model").String(); got != "claude-opus-4-7" {
+				t.Fatalf("final model = %q, want claude-opus-4-7", got)
+			}
+			assertSamplingFieldsAbsent(t, seenBody)
+		})
+	}
+}
+
+func TestClaudeExecutor_PayloadOverrideAwayFromOpus47KeepsSamplingFields(t *testing.T) {
+	payload := []byte(`{
+		"temperature": 0.2,
+		"top_p": 0.9,
+		"top_k": 17,
+		"messages": [{"role":"user","content":[{"type":"text","text":"hi"}]}]
+	}`)
+	cfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{{
+				Models: []config.PayloadModelRule{{
+					Name:     "claude-opus-4-7",
+					Protocol: "claude",
+				}},
+				Params: map[string]any{
+					"model": "claude-sonnet-4",
+				},
+			}},
+		},
+	}
+
+	for _, entryPoint := range []string{"Execute", "ExecuteStream"} {
+		t.Run(entryPoint, func(t *testing.T) {
+			seenBody, _ := captureClaudeUpstreamRequestForEntryPointWithConfig(t, entryPoint, context.Background(), "claude-opus-4-7", payload, cfg)
+			if got := gjson.GetBytes(seenBody, "model").String(); got != "claude-sonnet-4" {
+				t.Fatalf("final model = %q, want claude-sonnet-4", got)
+			}
+			assertSamplingFieldsPresent(t, seenBody)
+		})
+	}
+}
+
 func TestClaudeExecutor_TaskBudgetBetaAddedOnAllEntryPoints(t *testing.T) {
 	ctx := newClaudeHeaderTestRequest(t, http.Header{
 		"Anthropic-Beta": []string{"official-beta-1"},
@@ -99,8 +164,8 @@ func TestClaudeExecutor_TaskBudgetBetaAddedOnAllEntryPoints(t *testing.T) {
 			if !strings.Contains(betas, "custom-beta-1") {
 				t.Fatalf("Anthropic-Beta = %q, missing custom-beta-1", betas)
 			}
-			if counts := anthropicBetaCounts(betas); counts[taskBudgetsBeta] != 1 {
-				t.Fatalf("Anthropic-Beta = %q, expected exactly one %q token", betas, taskBudgetsBeta)
+			if counts := anthropicBetaCounts(betas); counts[helps.TaskBudgetsBeta] != 1 {
+				t.Fatalf("Anthropic-Beta = %q, expected exactly one %q token", betas, helps.TaskBudgetsBeta)
 			}
 		})
 	}
@@ -113,12 +178,18 @@ func TestClaudeExecutor_TaskBudgetBetaOmittedWhenTaskBudgetMissing(t *testing.T)
 	}`)
 
 	_, headers := captureClaudeUpstreamRequestForEntryPoint(t, "Execute", context.Background(), "claude-opus-4-7", payload)
-	if counts := anthropicBetaCounts(headers.Get("Anthropic-Beta")); counts[taskBudgetsBeta] != 0 {
-		t.Fatalf("Anthropic-Beta = %q, want no %q token without task_budget", headers.Get("Anthropic-Beta"), taskBudgetsBeta)
+	if counts := anthropicBetaCounts(headers.Get("Anthropic-Beta")); counts[helps.TaskBudgetsBeta] != 0 {
+		t.Fatalf("Anthropic-Beta = %q, want no %q token without task_budget", headers.Get("Anthropic-Beta"), helps.TaskBudgetsBeta)
 	}
 }
 
 func captureClaudeUpstreamRequestForEntryPoint(t *testing.T, entryPoint string, ctx context.Context, model string, payload []byte) ([]byte, http.Header) {
+	t.Helper()
+
+	return captureClaudeUpstreamRequestForEntryPointWithConfig(t, entryPoint, ctx, model, payload, &config.Config{})
+}
+
+func captureClaudeUpstreamRequestForEntryPointWithConfig(t *testing.T, entryPoint string, ctx context.Context, model string, payload []byte, cfg *config.Config) ([]byte, http.Header) {
 	t.Helper()
 
 	if ctx == nil {
@@ -146,7 +217,10 @@ func captureClaudeUpstreamRequestForEntryPoint(t *testing.T, entryPoint string, 
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	executor := NewClaudeExecutor(cfg)
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,

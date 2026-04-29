@@ -1,4 +1,4 @@
-package executor
+package helps
 
 import (
 	"strconv"
@@ -8,28 +8,32 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// taskBudgetsBeta is the Anthropic beta token required for
+// TaskBudgetsBeta is the Anthropic beta token required for
 // output_config.task_budget support on Claude Opus 4.7+ requests.
-const taskBudgetsBeta = "task-budgets-2026-03-13"
+const TaskBudgetsBeta = "task-budgets-2026-03-13"
 
-// ensureTaskBudgetsBeta appends the task-budget beta token when the request
+// EnsureTaskBudgetsBeta appends the task-budget beta token when the request
 // body includes output_config.task_budget.
-func ensureTaskBudgetsBeta(betas []string, body []byte) []string {
+func EnsureTaskBudgetsBeta(betas []string, body []byte) []string {
 	if !gjson.GetBytes(body, "output_config.task_budget").Exists() {
 		return betas
 	}
 	for _, beta := range betas {
-		if strings.EqualFold(strings.TrimSpace(beta), taskBudgetsBeta) {
+		if strings.EqualFold(strings.TrimSpace(beta), TaskBudgetsBeta) {
 			return betas
 		}
 	}
-	return append(betas, taskBudgetsBeta)
+	return append(betas, TaskBudgetsBeta)
 }
 
-// stripSamplingParamsForOpus47 removes sampling parameters that Anthropic does
+// StripSamplingParamsForOpus47 removes sampling parameters that Anthropic does
 // not accept for Claude Opus 4.7+ request bodies.
-func stripSamplingParamsForOpus47(body []byte, baseModel string) []byte {
-	if !isOpus47OrLater(baseModel) {
+func StripSamplingParamsForOpus47(body []byte, baseModel string) []byte {
+	effectiveModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if effectiveModel == "" {
+		effectiveModel = baseModel
+	}
+	if !IsOpus47OrLater(effectiveModel) {
 		return body
 	}
 	for _, path := range []string{"temperature", "top_p", "top_k"} {
@@ -38,9 +42,9 @@ func stripSamplingParamsForOpus47(body []byte, baseModel string) []byte {
 	return body
 }
 
-// isOpus47OrLater reports whether the model belongs to the Claude Opus 4.7+
+// IsOpus47OrLater reports whether the model belongs to the Claude Opus 4.7+
 // family that shares the task-budget and sampling-parameter restrictions.
-func isOpus47OrLater(model string) bool {
+func IsOpus47OrLater(model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	const prefix = "claude-opus-4-"
 	if !strings.HasPrefix(lower, prefix) {

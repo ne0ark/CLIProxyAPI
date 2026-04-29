@@ -87,6 +87,24 @@ func TestTryRefreshModels_PreservesCurrentMainOpus47Continuity(t *testing.T) {
 	}
 }
 
+func TestMergeEmbeddedAdditions_OnlyReplaysContinuityAllowlist(t *testing.T) {
+	remote := parseStaticModelsCatalog(t, embeddedModelsJSON)
+
+	preservedID := "claude-opus-4-7"
+	removedGeminiID := firstModelID(t, remote.Gemini)
+
+	remote.Claude = removeModelInfo(remote.Claude, preservedID)
+	remote.Gemini = removeModelInfo(remote.Gemini, removedGeminiID)
+
+	merged := mergeEmbeddedAdditions(remote)
+	if model := findModelInfo(merged.Claude, preservedID); model == nil {
+		t.Fatalf("expected %q to be replayed from the continuity allowlist", preservedID)
+	}
+	if model := findModelInfo(merged.Gemini, removedGeminiID); model != nil {
+		t.Fatalf("expected removed non-allowlisted model %q to stay absent after merge", removedGeminiID)
+	}
+}
+
 func assertCurrentMainClaudeOpus47Metadata(t *testing.T, model *ModelInfo) {
 	t.Helper()
 
@@ -111,6 +129,15 @@ func assertCurrentMainClaudeOpus47Metadata(t *testing.T, model *ModelInfo) {
 	if model.Thinking == nil {
 		t.Fatal("thinking metadata = nil, want configured levels")
 	}
+	if model.Thinking.Min != 1024 {
+		t.Fatalf("thinking.min = %d, want 1024", model.Thinking.Min)
+	}
+	if model.Thinking.Max != 128000 {
+		t.Fatalf("thinking.max = %d, want 128000", model.Thinking.Max)
+	}
+	if !model.Thinking.ZeroAllowed {
+		t.Fatal("thinking.zero_allowed = false, want true")
+	}
 	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
 	if len(model.Thinking.Levels) != len(wantLevels) {
 		t.Fatalf("thinking levels = %v, want %v", model.Thinking.Levels, wantLevels)
@@ -130,4 +157,28 @@ func parseStaticModelsCatalog(t *testing.T, data []byte) *staticModelsJSON {
 		t.Fatalf("parse static models catalog: %v", err)
 	}
 	return &parsed
+}
+
+func firstModelID(t *testing.T, models []*ModelInfo) string {
+	t.Helper()
+
+	for _, model := range models {
+		if model == nil || model.ID == "" {
+			continue
+		}
+		return model.ID
+	}
+	t.Fatal("expected at least one model in test fixture")
+	return ""
+}
+
+func removeModelInfo(models []*ModelInfo, removeID string) []*ModelInfo {
+	filtered := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model != nil && model.ID == removeID {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+	return filtered
 }
